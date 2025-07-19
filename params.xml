@@ -3,7 +3,9 @@
     <!-- DeepSeek基础信息 -->
     <DeepSeek>
         <version type="str">DeepSeek-R1-Distill-Qwen-1.5B</version>
-        <model_path type="str">D:/Users/xiangyu/download/Qwen_1.5B_Baseline</model_path>
+<!--        <model_path type="str">D:/Users/xiangyu/download/Qwen_1.5B_Baseline</model_path>-->
+<!--        <model_path type="str">E:/Qwen_1.5B_Baseline</model_path>-->
+        <model_path type="str">/root/autodl-tmp/DeepSeek-R1-Distill-Qwen-7B</model_path>
         <max_new_tokens type="int">500</max_new_tokens>
         <generated type="bool">True</generated>
         <device type="str">cuda</device>
@@ -29,7 +31,7 @@
         <warmup_ratio type="float">0.03</warmup_ratio>
         <weight_decay type="float">0.01</weight_decay>
         <lr_scheduler type="str">cosine</lr_scheduler>
-        <fp16 type="bool">True</fp16>
+        <fp16 type="bool">False</fp16>
         <bf16 type="bool">False</bf16>
         <device type="str">cuda</device>
     </Training>

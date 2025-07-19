@@ -27,7 +27,21 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
     #     # opt.step()
     pass
 
+def run(model, tokenizer, input_text):
+    inputs = tokenizer(input_text, return_tensors="pt").to(model.device)
+
+    # 修正后代码：
+    with torch.no_grad():
+        generated_ids = model.generate(**inputs, max_new_tokens=5000, pad_token_id=tokenizer.eos_token_id)
+    # 解码生成的token（跳过特殊令牌）
+    generated_text = tokenizer.decode(generated_ids.squeeze(), skip_special_tokens=True)
+    print(generated_text)
+
+
+
 if __name__ == "__main__":
     params = load_config("./params.xml")
     tokenizer, model = load_model(params)
-    print(type(model))
+    run(model, tokenizer, "0 个文件已提交，2 个文件提交失败: 调整文件 Committer identity unknown  *** Please tell me who you are.  Run  git config --global user.email ‘you@example.com’ git config --global user.name ‘Your Name’  to set your account's default identity. Omit --global to set the identity only in this repository.  unable to auto-detect email address (got 'qiqi@DESKTOP-TA8M4CB.(none)')"
+                          "问题如何解决")
+    # print(type(model))
