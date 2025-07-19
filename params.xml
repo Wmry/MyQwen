@@ -1,0 +1,55 @@
+<!-- config.xml -->
+<config>
+    <!-- DeepSeek基础信息 -->
+    <DeepSeek>
+        <version type="str">DeepSeek-R1-Distill-Qwen-1.5B</version>
+        <model_path type="str">D:/Users/xiangyu/download/Qwen_1.5B_Baseline</model_path>
+        <max_new_tokens type="int">500</max_new_tokens>
+        <generated type="bool">True</generated>
+        <device type="str">cuda</device>
+    </DeepSeek>
+
+    <!-- LoRA微调参数 -->
+    <LoRA>
+        <enabled type="bool">True</enabled>
+        <rank type="int">8</rank>
+        <alpha type="int">32</alpha>
+        <dropout type="float">0.05</dropout>
+        <target_modules type="list">q_proj,k_proj,v_proj,o_proj</target_modules>
+        <bias type="str">none</bias>
+    </LoRA>
+
+    <!-- 训练参数 -->
+    <Training>
+        <learning_rate type="float">3e-4</learning_rate>
+        <batch_size type="int">8</batch_size>
+        <num_epochs type="int">5</num_epochs>
+        <max_seq_length type="int">2048</max_seq_length>
+        <gradient_accumulation type="int">4</gradient_accumulation>
+        <warmup_ratio type="float">0.03</warmup_ratio>
+        <weight_decay type="float">0.01</weight_decay>
+        <lr_scheduler type="str">cosine</lr_scheduler>
+        <fp16 type="bool">True</fp16>
+        <bf16 type="bool">False</bf16>
+        <device type="str">cuda</device>
+    </Training>
+
+    <!-- 路径配置 -->
+    <Paths>
+        <model_dir type="str">D:/Users/xiangyu/download/Qwen_1.5B_Baseline</model_dir>
+        <train_data type="str">/path/to/train_dataset.jsonl</train_data>
+        <eval_data type="str">/path/to/eval_dataset.jsonl</eval_data>
+        <output_dir type="str">/path/to/lora_output</output_dir>
+        <logging_dir type="str">/path/to/training_logs</logging_dir>
+        <checkpoint_dir type="str">/path/to/checkpoints</checkpoint_dir>
+    </Paths>
+
+    <!-- 监控与评估 -->
+    <Evaluation>
+        <eval_steps type="int">500</eval_steps>
+        <save_steps type="int">1000</save_steps>
+        <logging_steps type="int">100</logging_steps>
+        <early_stopping_patience type="int">3</early_stopping_patience>
+        <metric type="list">bleu,rouge,perplexity</metric>
+    </Evaluation>
+</config>
