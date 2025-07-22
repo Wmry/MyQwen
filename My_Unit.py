@@ -63,7 +63,7 @@ def load_base_model(elements):
     elif elements['train_set']['bf16']:
         torch_dtype = torch.bfloat16
     else:
-        torch_dtype = "auto"
+        torch_dtype = "auto" # 建议不要用 "auto"，显式更好
 
     print(f"Using device: " + elements['base_info']['device'])
     tokenizer_tmp = AutoTokenizer.from_pretrained(elements['base_info']['model_path'])
@@ -73,12 +73,12 @@ def load_base_model(elements):
         torch_dtype=torch_dtype
     )
 
-    replace_attention_layers(model_tmp)
+    replace_attention_layers(model=model_tmp, elements=elements['base_info'])
 
     return tokenizer_tmp, model_tmp
 
 
-def replace_attention_layers(model, top_config=None):
+def replace_attention_layers(model, top_config=None, elements=None):
     """
     递归替换模型中的所有Qwen2Attention层
     top_config: 顶层模型的config对象，用于递归传递
@@ -93,7 +93,7 @@ def replace_attention_layers(model, top_config=None):
             new_attn = KGQwen2Attention(
                 top_config,  # 使用顶层config而不是当前模块的config
                 layer_idx=module.layer_idx
-            )
+            ).to(device=elements['device'], dtype=top_config.torch_dtype)
 
             # 复制原始权重
             attn_state_dict = module.state_dict()
@@ -110,7 +110,17 @@ def replace_attention_layers(model, top_config=None):
             setattr(model, name, new_attn)
         else:
             # 递归处理子模块，传递顶层config
-            replace_attention_layers(module, top_config)
+            replace_attention_layers(module, top_config, elements)
+
+# 针对 inputs 做智能处理：input_ids 保持 long，其它可以变 dtype
+def smart_to_dtype_and_device(inputs, model_dtype, device):
+    new_inputs = {}
+    for k, v in inputs.items():
+        if v.dtype in [torch.long, torch.int]:  # 不能改 dtype 的情况
+            new_inputs[k] = v.to(device)
+        else:
+            new_inputs[k] = v.to(dtype=model_dtype, device=device)
+    return new_inputs
 
 if __name__ == "__main__":
     params = load_config("./params.xml")

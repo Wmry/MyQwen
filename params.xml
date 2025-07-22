@@ -33,7 +33,7 @@
         <lr_scheduler type="str">cosine</lr_scheduler>
         <fp16 type="bool">False</fp16>
         <bf16 type="bool">False</bf16>
-        <device type="str">cuda</device>
+        <device type="str">cuda:0</device>
     </Training>
 
     <!-- 路径配置 -->

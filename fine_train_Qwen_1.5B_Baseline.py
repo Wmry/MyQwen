@@ -1,10 +1,22 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
-from My_Unit import load_config, load_base_model
+from My_Unit import load_config, load_base_model, smart_to_dtype_and_device
 
 def load_model(elements):
     tokenizer_tmp, model_tmp = load_base_model(elements)
     return tokenizer_tmp, model_tmp
+
+def prepare_inputs(inputs, model):
+    # 用 next(model.parameters()) 拿到实际 dtype 和 device
+    param = next(model.parameters())
+    device = param.device
+    dtype = param.dtype
+
+    return {
+        k: v.to(device) if v.dtype in (torch.long, torch.int) else v.to(dtype=dtype, device=device)
+        for k, v in inputs.items()
+    }
+
 
 def train(data_tmp, tokenizer_tmp, model_tmp, epochs, is_eval=False):
     if is_eval:
@@ -27,21 +39,27 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
     #     # opt.step()
     pass
 
+
 def run(model, tokenizer, input_text):
-    inputs = tokenizer(input_text, return_tensors="pt").to(model.device)
+    model.eval()
+    inputs = tokenizer(input_text, return_tensors="pt")
 
-    # 修正后代码：
+    # 保证输入和模型 device/dtype 匹配
+    inputs = prepare_inputs(inputs, model)
+
     with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=5000, pad_token_id=tokenizer.eos_token_id)
-    # 解码生成的token（跳过特殊令牌）
-    generated_text = tokenizer.decode(generated_ids.squeeze(), skip_special_tokens=True)
-    print(generated_text)
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=5000,
+            pad_token_id=tokenizer.eos_token_id
+        )
 
+    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    print(generated_text)
 
 
 if __name__ == "__main__":
     params = load_config("./params.xml")
     tokenizer, model = load_model(params)
-    run(model, tokenizer, "0 个文件已提交，2 个文件提交失败: 调整文件 Committer identity unknown  *** Please tell me who you are.  Run  git config --global user.email ‘you@example.com’ git config --global user.name ‘Your Name’  to set your account's default identity. Omit --global to set the identity only in this repository.  unable to auto-detect email address (got 'qiqi@DESKTOP-TA8M4CB.(none)')"
-                          "问题如何解决")
+    run(model, tokenizer, "请给出一篇500字的自我介绍，介绍大模型计算和编程")
     # print(type(model))
