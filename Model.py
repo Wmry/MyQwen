@@ -168,7 +168,7 @@ class KGEmbedding(nn.Module):
         self.hidden_channels = hidden_channels
         self.encode_relation = nn.Sequential(
             nn.Linear(channels, hidden_channels),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_channels, hidden_channels * relation_num)
         )
 
