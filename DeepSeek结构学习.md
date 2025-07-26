@@ -57,7 +57,7 @@ pip install evaluate # 使用hugging face的评价指标库 evaluate
 
 
 #######  构建知识图谱
-<font color=blue size=3>设计思路：通过设计编码器（线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系。</font>
+<font color=blue size=3>设计思路：通过设计编码器（隐状态+激活函数+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系。</font>
 <font color=red size=3>问题1：如何使得隐空间有区分</font>
 
 [(2025)AlignVLM: Bridging Vision and Language Latent Spaces for Multimodal Understanding](D:/Users/xiangyu/download/paper/AlignVLM.pdf)
