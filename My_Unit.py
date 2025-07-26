@@ -52,7 +52,7 @@ def load_config(filename):
         return {"base_info":base_info, "lora_set":lora_set, "train_set":train_set, "path_set":path_set }
 
     except Exception as e:
-        print(f"加载配置出错: {str(e)}")
+        print(f"加载配置出错: {str(e)}请检查params文件是否配置齐全")
         raise
 
 def load_base_model(elements):
