@@ -1,11 +1,70 @@
 import torch
 from torch import nn
 import math
+import torch.nn.functional as F
 from transformers import Qwen2Config
-from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, logger, Qwen2RotaryEmbedding, apply_rotary_pos_emb, repeat_kv, Cache
+from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, logger, Qwen2RotaryEmbedding, apply_rotary_pos_emb, repeat_kv, Cache, Qwen2DecoderLayer
 from typing import List, Optional, Tuple, Union
 from torch import nn
 
+
+class KGQwen2DecoderLayer(Qwen2DecoderLayer):
+    def __init__(self, config: Qwen2Config, layer_idx: int):
+        super().__init__(config, layer_idx)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
+                `(batch, sequence_length)` where padding elements are indicated by 0.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+                (see `past_key_values`).
+            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+        """
+
+        residual = hidden_states
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        if use_cache:
+            outputs += (present_key_value,)
+
+        return outputs
 
 class KGQwen2Attention(Qwen2Attention):
     def __init__(self, config: Qwen2Config, layer_idx: Optional[int] = None, relation_model: nn.Module = None):
@@ -41,8 +100,12 @@ class KGQwen2Attention(Qwen2Attention):
                 )
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        #  嵌入对模型改造的相关代码
 
+        ################################################################################################################
+        # 嵌入对模型改造的相关代码 计算未加入词向量的关系矩阵
+        # self.relation_model(query_states, key_states)
+
+        ################################################################################################################
 
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
@@ -75,6 +138,13 @@ class KGQwen2Attention(Qwen2Attention):
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
 
+        ################################################################################################################
+        # 在此处插入计算knowledge Graph Relation的词嵌入kg_relation_output,通过权重W将其融入attn_output中
+        # torch.matmul(attn_weights, value_states)  attn_weights size (bsz, head_attn, q_len, q_len)
+        #                                           value_states size (bsz, head_attn, q_len, channels)
+
+        ################################################################################################################
+
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
                 f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
@@ -92,13 +162,26 @@ class KGQwen2Attention(Qwen2Attention):
         return attn_output, attn_weights, past_key_value
 
 class KGEmbedding(nn.Module):
-    def __init__(self, channels, hidden_channels,relation_num):
+    def __init__(self, channels, hidden_channels, relation_num):
         super(KGEmbedding, self).__init__()
-        self.encode_relation = nn.Linear(channels, hidden_channels)
+        self.relation_num = relation_num
+        self.hidden_channels = hidden_channels
+        self.encode_relation = nn.Sequential(
+            nn.Linear(channels, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, hidden_channels * relation_num)
+        )
 
-    def _forward(self, inputs):
+    def _forward(self, query_states, key_states):
+        input_dtype = query_states.dtype
+        (bsz, n_len, channels) = query_states.shape
+        x1 = self.encode_relation(torch.cat([query_states, key_states], dim=-1))
+        x1 = x1.reshape(bsz*self.relation_num, n_len, -1)
+        # upcast attention to fp32
+        x1 = x1.to(torch.float32)
+        x2 = torch.bmm(x1, x1.transpose(1, 2))
+        relation = x2.reshape(bsz, -1, n_len, n_len)
+        return relation.to(input_dtype)
 
-        pass
-
-    def forward(self, inputs):
-        return self._forward(inputs)
+    def forward(self, query_states, key_states):
+        return self._forward(query_states, key_states)
