@@ -90,3 +90,15 @@ class KGQwen2Attention(Qwen2Attention):
             attn_weights = None
 
         return attn_output, attn_weights, past_key_value
+
+class KGEmbedding(nn.Module):
+    def __init__(self, channels, hidden_channels,relation_num):
+        super(KGEmbedding, self).__init__()
+        self.encode_relation = nn.Linear(channels, hidden_channels)
+
+    def _forward(self, inputs):
+
+        pass
+
+    def forward(self, inputs):
+        return self._forward(inputs)
