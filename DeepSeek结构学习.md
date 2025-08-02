@@ -61,9 +61,15 @@ pip install evaluate # 使用hugging face的评价指标库 evaluate
 使用GNN构建知识图谱并更新大模型知识，Understand_step_1:使用$V \in $
 
 ######  构建知识图谱
-<font color=blue size=3>设计思路1、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系（代替lm_head）</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>
+<font color=blue size=3>设计思路1、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系（代替lm_head），汇聚的节点为embed_tokens中获取的隐状态，边通过余弦相关性计算</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>
+$$
+N(c_t) = \{c^{(1)}_{t_1}, ..., c^{(k)}_{t_k}\}\\
+p=(W_t|C_t)\\
+c^{(i)}_j = \{w^{(i)}_{j+p}\}^r_{p=-l}，l,r表示左右窗口大小\\
+w^{(i)}_j\\i表示i^{th}训练样本，j表示j^{th}时间步，w^{(i)}_j,通过查询模型nn.Embedding获取\\
+$$
 
-`<font color=blue size=3>设计思路2、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>`
+<font color=blue size=3>设计思路2、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>
 
 ```python
 class Qwen2ForCausalLM(Qwen2PreTrainedModel):
