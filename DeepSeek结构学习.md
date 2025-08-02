@@ -1,4 +1,9 @@
 # DeepSeek结构学习
+
+<font color=red>红色表示暂定需要确定的</font>
+
+<font color=blue>蓝色表示可暂定确定的</font>
+
 ## 模型结构
 ```python
 Qwen2ForCausalLM(
@@ -55,10 +60,60 @@ pip install evaluate # 使用hugging face的评价指标库 evaluate
 [(2022)GNN-LM: LANGUAGE MODELING BASED ON GLOBAL CONTEXTS VIA GNN](D:/Users/xiangyu/download/paper/GNN-LM.pdf)
 使用GNN构建知识图谱并更新大模型知识，Understand_step_1:使用$V \in $
 
+######  构建知识图谱
+<font color=blue size=3>设计思路1、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系（代替lm_head）</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>
 
-#######  构建知识图谱
-<font color=blue size=3>设计思路：通过设计编码器（隐状态+激活函数+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系。</font>
-<font color=red size=3>问题1：如何使得隐空间有区分</font>
+`<font color=blue size=3>设计思路2、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>`
+
+```python
+class Qwen2ForCausalLM(Qwen2PreTrainedModel):
+def __init__(self, config):
+	...........
+	
+def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+    .................................
+        hidden_states = outputs[0]
+        # 获取词元预测值
+        logits = self.lm_head(hidden_states)
+        logits = logits.float()
+		loss = None
+        
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+```
 
 [(2025)AlignVLM: Bridging Vision and Language Latent Spaces for Multimodal Understanding](D:/Users/xiangyu/download/paper/AlignVLM.pdf)
 关键技术：对比学习实现多模态对齐

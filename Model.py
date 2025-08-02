@@ -3,7 +3,7 @@ from torch import nn
 import math
 import torch.nn.functional as F
 from transformers import Qwen2Config
-from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, logger, Qwen2RotaryEmbedding, apply_rotary_pos_emb, repeat_kv, Cache, Qwen2DecoderLayer
+from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Attention, logger, Qwen2RotaryEmbedding, apply_rotary_pos_emb, repeat_kv, Cache, Qwen2DecoderLayer
 from typing import List, Optional, Tuple, Union
 from torch import nn
 
@@ -35,9 +35,9 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
             past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
 
-        residual = hidden_states
+        residual = hidden_states # 获取残差向量
 
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = self.input_layernorm(hidden_states) # 正则化
 
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -48,7 +48,7 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
             output_attentions=output_attentions,
             use_cache=use_cache,
         )
-        hidden_states = residual + hidden_states
+        hidden_states = residual + hidden_states # 短残差链接
 
         # Fully Connected
         residual = hidden_states
