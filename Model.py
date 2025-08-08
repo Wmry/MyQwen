@@ -162,15 +162,24 @@ class KGQwen2Attention(Qwen2Attention):
         return attn_output, attn_weights, past_key_value
 
 class KGEmbedding(nn.Module):
-    def __init__(self, channels, hidden_channels, relation_num):
+    #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
+    def __init__(self, channels, hidden_channels, relation_num, node_num):
         super(KGEmbedding, self).__init__()
+        self.channels = channels
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
-        self.encode_relation = nn.Sequential(
-            nn.Linear(channels, hidden_channels),
-            nn.GELU(),
-            nn.Linear(hidden_channels, hidden_channels * relation_num)
-        )
+        self.W_q = nn.Linear(channels, channels)
+        self.W_k = nn.Linear(channels, channels)
+        self.R_map = nn.Parameter(torch.Tensor(node_num, node_num, relation_num))
+
+    def _encode_relation(self, h_t, layer_id, embedding: nn.Embedding):
+        (bsz, node_num, channels) = h_t.size()
+        layer_id = self.R_map[layer_id, :, :] # (bsz, 1, :, relation_num)
+        node_e = embedding(layer_id) # (bsz, :, relation_num, channels)
+        h_t_e = self.W_q(node_e) # (bsz, :, channels)
+        h_t_s = self.W_k(h_t) # (bsz, node_num, channels)
+        attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)
+        return attention
 
     def _forward(self, query_states, key_states):
         input_dtype = query_states.dtype
