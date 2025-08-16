@@ -1,7 +1,8 @@
 import xml.etree.ElementTree as ET
-
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from datasets import load_dataset
+from scipy.constants import value
+from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForLanguageModeling
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
 from Model import KGQwen2Attention
 
@@ -10,7 +11,7 @@ params = ['DeepSeek-version', 'DeepSeek-model_path', 'DeepSeek-max_new_tokens',
           'LoRA-target_modules', 'LoRA-bias', 'Training-learning_rate', 'Training-batch_size',
           'Training-num_epochs', 'Training-max_seq_length', 'Training-gradient_accumulation',
           'Training-warmup_ratio', 'Training-weight_decay', 'Training-lr_scheduler',
-          'Training-fp16', 'Training-bf16', 'Training-device']
+          'Training-fp16', 'Training-bf16', 'Training-device','Paths-train_data','Paths-txtfile_name']
 
 def get_value(element):
     """根据类型声明解析XML元素值"""
@@ -47,7 +48,7 @@ def load_config(filename):
                 lora_set[name_t] = value
             elif name_c == 'Training':
                 train_set[name_t] = value
-            elif name_c == 'Path':
+            elif name_c == 'Paths':
                 path_set[name_t] = value
         return {"base_info":base_info, "lora_set":lora_set, "train_set":train_set, "path_set":path_set }
 
@@ -122,6 +123,64 @@ def smart_to_dtype_and_device(inputs, model_dtype, device):
             new_inputs[k] = v.to(dtype=model_dtype, device=device)
     return new_inputs
 
+def load_my_dataset(txt_path, txt_name="TestKG.txt",  tokenizer=None, batch_size=4):
+    # 1. 加载本地txt文本，每行一个样本
+    dataset = load_dataset(txt_path, data_files=txt_name, encoding='GB18030')
+
+    # 2. 过滤空行和无效行
+    def filter_empty_lines(example):
+        # 去除首尾空白后检查是否为空
+        stripped = example['text'].strip()
+        # 排除空行和只有标点符号的行
+        return stripped != '' and not stripped.isspace() and len(stripped) > 1
+
+    dataset = dataset.filter(filter_empty_lines)
+
+    # 2. 切分训练集/测试集
+    dataset_split = dataset["train"].train_test_split(test_size=0.1, seed=42)
+
+    train_dataset = dataset_split["train"]
+    test_dataset = dataset_split["test"]
+
+    # 3. 初始化分词器（以Qwen为例）
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained("D:/Users/xiangyu/download/Qwen_1.5B_Baseline", trust_remote_code=True)
+
+    # 4. 定义分词函数（动态截断）
+    def tokenize_function(examples):
+        return tokenizer(examples["text"], truncation=True, padding="max_length", max_length=256)
+
+    # 5. 对训练集和测试集做token化
+    train_dataset = train_dataset.map(tokenize_function, batched=True)
+    test_dataset = test_dataset.map(tokenize_function, batched=True)
+
+    # 删除原始文本列
+    train_dataset = train_dataset.remove_columns(["text"])
+    test_dataset = test_dataset.remove_columns(["text"])
+
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False,
+        pad_to_multiple_of = 8  # 可选：提高GPU效率
+    )
+
+    # 7. 转为 PyTorch DataLoader
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=batch_size,  # 样本数
+        shuffle=True,
+        collate_fn=data_collator
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=data_collator
+    )
+    return train_loader, test_loader
+
 if __name__ == "__main__":
     params = load_config("./params.xml")
+    a, b = load_my_dataset("D:/Users/xiangyu")
     print(params)

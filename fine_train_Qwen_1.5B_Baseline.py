@@ -1,6 +1,6 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
-from My_Unit import load_config, load_base_model, smart_to_dtype_and_device
+from My_Unit import load_config, load_base_model, smart_to_dtype_and_device, load_my_dataset
 
 def load_model(elements):
     tokenizer_tmp, model_tmp = load_base_model(elements)
@@ -39,27 +39,37 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
     #     # opt.step()
     pass
 
+def run(model, dataloader, tokenizer):
+    model.train()
+    for data in dataloader:
+        print(data["attention_mask"].sum(dim=-1))
 
-def run(model, tokenizer, input_text):
-    model.eval()
-    inputs = tokenizer(input_text, return_tensors="pt")
 
-    # 保证输入和模型 device/dtype 匹配
-    inputs = prepare_inputs(inputs, model)
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=5000,
-            pad_token_id=tokenizer.eos_token_id
-        )
-
-    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    print(generated_text)
+# def run(model, tokenizer, input_text):
+#     model.eval()
+#     inputs = tokenizer(input_text, return_tensors="pt")
+#
+#     # 保证输入和模型 device/dtype 匹配
+#     inputs = prepare_inputs(inputs, model)
+#
+#     with torch.no_grad():
+#         outputs = model.generate(
+#             **inputs,
+#             max_new_tokens=5000,
+#             pad_token_id=tokenizer.eos_token_id
+#         )
+#
+#     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+#     print(generated_text)
 
 
 if __name__ == "__main__":
     params = load_config("./params.xml")
     tokenizer, model = load_model(params)
-    run(model, tokenizer, "请给出一篇500字的自我介绍，介绍大模型计算和编程")
+    train_path = params['path_set']['train_data']
+    train_txtfile = params['path_set']['txtfile_name']
+    train_loader, test_loader = load_my_dataset(txt_path=train_path, txt_name=train_txtfile, tokenizer=tokenizer)
+    run(model, train_loader, tokenizer)
+    # run(model, tokenizer, "请给出一篇500字的自我介绍，介绍大模型计算和编程")
     # print(type(model))

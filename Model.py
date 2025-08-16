@@ -2,7 +2,9 @@ import torch
 from torch import nn
 import math
 import torch.nn.functional as F
+from torch.nn import CrossEntropyLoss
 from transformers import Qwen2Config
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Attention, logger, Qwen2RotaryEmbedding, apply_rotary_pos_emb, repeat_kv, Cache, Qwen2DecoderLayer
 from typing import List, Optional, Tuple, Union
 from torch import nn
@@ -161,6 +163,100 @@ class KGQwen2Attention(Qwen2Attention):
 
         return attn_output, attn_weights, past_key_value
 
+class KGQwen2ForCausalLM(Qwen2ForCausalLM):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, Qwen2ForCausalLM
+
+        >>> model = Qwen2ForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
+        >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        hidden_states = outputs[0]
+        logits = self.lm_head(hidden_states)
+        logits = logits.float()
+
+        loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
+
+
 class KGEmbedding(nn.Module):
     #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
     def __init__(self, channels, hidden_channels, relation_num, node_num):
@@ -172,10 +268,14 @@ class KGEmbedding(nn.Module):
         self.W_k = nn.Linear(channels, channels)
         self.R_map = nn.Parameter(torch.Tensor(node_num, node_num, relation_num))
 
-    def _encode_relation(self, h_t, layer_id, embedding: nn.Embedding):
+    def _encode_relation(self, h_t, input_ids, attention_mask, embedding: nn.Embedding):
         (bsz, node_num, channels) = h_t.size()
-        layer_id = self.R_map[layer_id, :, :] # (bsz, 1, :, relation_num)
-        node_e = embedding(layer_id) # (bsz, :, relation_num, channels)
+        # input_ids = input_ids[attention_mask>0] # 去除填充节点索引
+        neighbor_ids = self.R_map[input_ids, :, :] # (nodes, :, relation_num=1)
+
+        value, index = torch.sort(neighbor_ids.unsqueeze(-1), dim=-1)
+
+        node_e = embedding(index) # (bsz, :, relation_num, channels)
         h_t_e = self.W_q(node_e) # (bsz, :, channels)
         h_t_s = self.W_k(h_t) # (bsz, node_num, channels)
         attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)

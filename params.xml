@@ -5,7 +5,7 @@
         <version type="str">DeepSeek-R1-Distill-Qwen-1.5B</version>
         <model_path type="str">D:/Users/xiangyu/download/Qwen_1.5B_Baseline</model_path>
 <!--        <model_path type="str">E:/Qwen_1.5B_Baseline</model_path>-->
-        <model_path type="str">/root/autodl-tmp/DeepSeek-R1-Distill-Qwen-7B</model_path>
+<!--        <model_path type="str">/root/autodl-tmp/DeepSeek-R1-Distill-Qwen-7B</model_path>-->
         <max_new_tokens type="int">500</max_new_tokens>
         <generated type="bool">True</generated>
         <device type="str">cuda</device>
@@ -38,8 +38,10 @@
 
     <!-- 路径配置 -->
     <Paths>
-        <model_dir type="str">D:/Users/xiangyu/download/Qwen_1.5B_Baseline</model_dir>
-        <train_data type="str">/path/to/train_dataset.jsonl</train_data>
+<!--        <model_dir type="str">D:/Users/xiangyu/download/Qwen_1.5B_Baseline</model_dir>-->
+        <train_data type="str">D:/Users/xiangyu</train_data>
+        <train_data type="str">/root/autodl-tmp/train_data</train_data>
+        <txtfile_name type="str">TestKG.txt</txtfile_name>
         <eval_data type="str">/path/to/eval_dataset.jsonl</eval_data>
         <output_dir type="str">/path/to/lora_output</output_dir>
         <logging_dir type="str">/path/to/training_logs</logging_dir>
