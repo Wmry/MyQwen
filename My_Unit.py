@@ -4,7 +4,7 @@ from datasets import load_dataset
 from scipy.constants import value
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForLanguageModeling
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
-from Model import KGQwen2Attention
+from Model import KGQwen2Attention, KGQwen2ForCausalLM
 
 params = ['DeepSeek-version', 'DeepSeek-model_path', 'DeepSeek-max_new_tokens',
           'DeepSeek-generated', 'LoRA-enabled', 'LoRA-rank', 'LoRA-alpha', 'LoRA-dropout',
@@ -68,7 +68,7 @@ def load_base_model(elements):
 
     print(f"Using device: " + elements['base_info']['device'])
     tokenizer_tmp = AutoTokenizer.from_pretrained(elements['base_info']['model_path'])
-    model_tmp = AutoModelForCausalLM.from_pretrained(
+    model_tmp = KGQwen2ForCausalLM.from_pretrained(
         elements['base_info']['model_path'],
         device_map=elements['base_info']['device'],
         torch_dtype=torch_dtype
@@ -182,5 +182,5 @@ def load_my_dataset(txt_path, txt_name="TestKG.txt",  tokenizer=None, batch_size
 
 if __name__ == "__main__":
     params = load_config("./params.xml")
-    a, b = load_my_dataset("D:/Users/xiangyu")
+    # a, b = load_my_dataset("D:/Users/xiangyu")
     print(params)

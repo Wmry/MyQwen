@@ -42,7 +42,9 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
 def run(model, dataloader, tokenizer):
     model.train()
     for data in dataloader:
-        print(data["attention_mask"].sum(dim=-1))
+        data = prepare_inputs(data, model)
+        input_ids = data['input_ids']
+        outputs = model(input_ids=input_ids, tokenizer=tokenizer)
 
 
 
@@ -71,5 +73,5 @@ if __name__ == "__main__":
     train_txtfile = params['path_set']['txtfile_name']
     train_loader, test_loader = load_my_dataset(txt_path=train_path, txt_name=train_txtfile, tokenizer=tokenizer)
     run(model, train_loader, tokenizer)
-    # run(model, tokenizer, "请给出一篇500字的自我介绍，介绍大模型计算和编程")
-    # print(type(model))
+    # run(model, tokenizer, "请解释你自己，是什么大模型")
+    print(type(model))

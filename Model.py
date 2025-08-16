@@ -3,7 +3,7 @@ from torch import nn
 import math
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
-from transformers import Qwen2Config
+from transformers import Qwen2Config, PreTrainedTokenizer
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Attention, logger, Qwen2RotaryEmbedding, apply_rotary_pos_emb, repeat_kv, Cache, Qwen2DecoderLayer
 from typing import List, Optional, Tuple, Union
@@ -166,6 +166,7 @@ class KGQwen2Attention(Qwen2Attention):
 class KGQwen2ForCausalLM(Qwen2ForCausalLM):
     def __init__(self, config):
         super().__init__(config)
+        self.encode_relation = KGEmbedding(100, 100, 2, 15342)
 
     def forward(
         self,
@@ -179,6 +180,7 @@ class KGQwen2ForCausalLM(Qwen2ForCausalLM):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        tokenizer : Optional[PreTrainedTokenizer] = None
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -226,6 +228,13 @@ class KGQwen2ForCausalLM(Qwen2ForCausalLM):
         )
 
         hidden_states = outputs[0]
+
+        #########################################################################
+        # 依据输出的hidden_states和self.encode_relation增强hidden_states
+
+        hidden_states = self.encode_relation(hidden_states, input_ids, attention_mask, tokenizer)
+
+        #########################################################################
         logits = self.lm_head(hidden_states)
         logits = logits.float()
 
@@ -269,28 +278,32 @@ class KGEmbedding(nn.Module):
         self.R_map = nn.Parameter(torch.Tensor(node_num, node_num, relation_num))
 
     def _encode_relation(self, h_t, input_ids, attention_mask, embedding: nn.Embedding):
-        (bsz, node_num, channels) = h_t.size()
+        bsz, node_num, channels = h_t.size()
+        device = h_t.device
+        dtype = h_t.dtype
+        mask = attention_mask.bool()
         # input_ids = input_ids[attention_mask>0] # 去除填充节点索引
-        neighbor_ids = self.R_map[input_ids, :, :] # (nodes, :, relation_num=1)
+        # neighbor_ids = self.R_map[input_ids, :, :] # (nodes, :, relation_num=1)
+        #
+        # value, index = torch.sort(neighbor_ids.unsqueeze(-1), dim=-1)
+        #
+        # node_e = embedding(index) # (bsz, :, relation_num, channels)
+        # h_t_e = self.W_q(node_e) # (bsz, :, channels)
+        # h_t_s = self.W_k(h_t) # (bsz, node_num, channels)
+        # attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)
+        pass
 
-        value, index = torch.sort(neighbor_ids.unsqueeze(-1), dim=-1)
+    def _forward(self, query_states, input_ids, attention_mask, embedding: nn.Embedding):
+        # input_dtype = query_states.dtype
+        # (bsz, n_len, channels) = query_states.shape
+        # x1 = self.encode_relation(torch.cat([query_states, key_states], dim=-1))
+        # x1 = x1.reshape(bsz*self.relation_num, n_len, -1)
+        # # upcast attention to fp32
+        # x1 = x1.to(torch.float32)
+        # x2 = torch.bmm(x1, x1.transpose(1, 2))
+        # relation = x2.reshape(bsz, -1, n_len, n_len)
+        # return relation.to(input_dtype)
+        return self._encode_relation(query_states, input_ids, attention_mask, embedding)
 
-        node_e = embedding(index) # (bsz, :, relation_num, channels)
-        h_t_e = self.W_q(node_e) # (bsz, :, channels)
-        h_t_s = self.W_k(h_t) # (bsz, node_num, channels)
-        attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)
-        return attention
-
-    def _forward(self, query_states, key_states):
-        input_dtype = query_states.dtype
-        (bsz, n_len, channels) = query_states.shape
-        x1 = self.encode_relation(torch.cat([query_states, key_states], dim=-1))
-        x1 = x1.reshape(bsz*self.relation_num, n_len, -1)
-        # upcast attention to fp32
-        x1 = x1.to(torch.float32)
-        x2 = torch.bmm(x1, x1.transpose(1, 2))
-        relation = x2.reshape(bsz, -1, n_len, n_len)
-        return relation.to(input_dtype)
-
-    def forward(self, query_states, key_states):
-        return self._forward(query_states, key_states)
+    def forward(self, query_states, input_ids, attention_mask, embedding: nn.Embedding):
+        return self._forward(query_states, input_ids, attention_mask, embedding)
