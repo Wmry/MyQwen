@@ -282,6 +282,7 @@ class KGEmbedding(nn.Module):
         # 通过W_q、W_k去计算X_i与X_j之间的相关性而不是显示存储在R_map中
         self.W_q = nn.Linear(channels, channels)
         self.W_k = nn.Linear(channels, channels)
+        self.W_v = nn.Linear(channels, channels)
         self.R_i = torch.arange(node_num, dtype=torch.int) # 映射不同节点关系索引
 
     def init_params(self):
@@ -294,11 +295,8 @@ class KGEmbedding(nn.Module):
 
         if attention_mask is not None:
             mask = attention_mask.bool()
-            self.adjacent_node(h_t, input_ids, mask, embedding, True)
-        else:
-            mask = None
-        if mask is None:
-            pass
+            score, x = self.get_adj(h_t, input_ids, mask, embedding, True)  # [B, V_s, V_t]
+
         return h_t
         ###### 需要提取出start节点与target节点之间的关系，构建一个index = [[],[]] sec = [[],[]]数组存放关系再构建使用PYG对向量进行汇聚
         # 可以使用scatter_add进行汇聚操作，才此之间乘以R_map
@@ -313,30 +311,45 @@ class KGEmbedding(nn.Module):
         # attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)
         pass
 
-    def adjacent_node(
-            self,
-            h_t,
-            input_ids : torch.Tensor,
-            attention_mask : torch.Tensor,
-            embedding: nn.Embedding,
-            keepdim : bool = True
-            ):
-        token_embedding = embedding(self.R_i.unsqueeze(0).to(input_ids.device))
-        token_embedding = token_embedding.squeeze(0)
+    def get_adj(self, h_t, input_ids, attention_mask, embedding, keepdim=True):
+        # 直接取 embedding.weight
+        token_embedding = embedding.weight  # [V, d]
 
-        max_node = attention_mask.sum(dim=-1, keepdim=True).max()
-        start = input_ids[attention_mask]
-        R_i = self.R_i.repeat(start.size(0), 1)
-        # 然后对最后一维进行打乱
-        bsz, nodes = R_i.size()
-        shuffled_indices = torch.randperm(nodes)
-        R_i = R_i[:, shuffled_indices]
-        R_i = R_i[:, 0:math.floor(nodes*0.5)]
-        target_j = self.W_k(token_embedding)
-        target_i = self.W_q()
-        pass
+        # batch 有效 token
+        start = input_ids[attention_mask]  # [B]
+        bsz = start.size(0)
+        nodes = token_embedding.size(0)
+
+        if self.tarning:
+            # 随机采样 target，不用全 shuffle
+            target_idx = torch.stack([
+                torch.randperm(nodes, device=input_ids.device)[:nodes // 2]
+                for _ in range(bsz)
+            ])  # [B, K]
+        else:
+            target_idx = torch.stack([
+                torch.randperm(nodes, device=input_ids.device)
+                for _ in range(bsz)
+            ])  # [B, K]
+
+        # 构建 mask
+        target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
+        target.scatter_(1, target_idx, True)
 
 
+        # Q/K/V 投影
+        x_target = self.W_k(token_embedding)  # [V, d]
+        x_start = self.W_q(token_embedding[start])  # [B, d]
+        x_v = self.W_v(token_embedding)
+
+        with torch.cuda.amp.autocast():  # AMP 节省显存
+            score_s2t = torch.matmul(x_start, x_target.transpose(0, 1))  # [V, s]
+        score_s2t = torch.matmul(x_start, x_target.transpose(0, 1))  # [B, V]
+        if self.tarning:
+            score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
+        score_s2t = torch.softmax(score_s2t, dim=-1)  # [B, V]
+
+        return score_s2t, x_v # [B, V_s, V_t]
 
     def _forward(self, query_states, input_ids, attention_mask, embedding: nn.Embedding):
         # input_dtype = query_states.dtype
