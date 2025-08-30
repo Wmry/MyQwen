@@ -123,7 +123,7 @@ def smart_to_dtype_and_device(inputs, model_dtype, device):
             new_inputs[k] = v.to(dtype=model_dtype, device=device)
     return new_inputs
 
-def load_my_dataset(txt_path, txt_name="TestKG.txt",  tokenizer=None, batch_size=4):
+def load_my_dataset(txt_path, txt_name="TestKG.txt",  tokenizer=None, batch_size=2):
     # 1. 加载本地txt文本，每行一个样本
     dataset = load_dataset(txt_path, data_files=txt_name, encoding='GB18030')
 

@@ -74,7 +74,9 @@ c^{(i)}_j = \{w^{(i)}_{j+p}\}^r_{p=-l}，l,r表示左右窗口大小\\
 w^{(i)}_j\\i表示i^{th}训练样本，j表示j^{th}时间步，w^{(i)}_j,通过查询模型nn.Embedding获取\\
 $$
 
-\*预训练方案：通过逻辑掩码+回归预测任务训练关系编码器。
+\*预训练方案：通过逻辑掩码+回归预测任务训练关系编码器。通过scatter_add进行汇聚，原论文中的$h_s, h_n$通过预训练存储再通过【FAISS】存储预料中Token向量并建立索引
+
+![sctter_add操作示意图](C:\Users\LZF\Desktop\sctter_add操作示意图.jpg)
 
 <font color=blue size=3>设计思路2、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>
 

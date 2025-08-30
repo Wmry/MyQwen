@@ -1,4 +1,5 @@
 import torch
+from numpy import dtype
 from torch import nn
 import math
 import torch.nn.functional as F
@@ -166,7 +167,8 @@ class KGQwen2Attention(Qwen2Attention):
 class KGQwen2ForCausalLM(Qwen2ForCausalLM):
     def __init__(self, config):
         super().__init__(config)
-        self.encode_relation = KGEmbedding(100, 100, 2, 15342)
+        self.token_dim = self.model.embed_tokens.embedding_dim
+        self.encode_relation = KGEmbedding(self.token_dim, self.token_dim, 2, config.vocab_size)
 
     def forward(
         self,
@@ -232,7 +234,7 @@ class KGQwen2ForCausalLM(Qwen2ForCausalLM):
         #########################################################################
         # 依据输出的hidden_states和self.encode_relation增强hidden_states
 
-        hidden_states = self.encode_relation(hidden_states, input_ids, attention_mask, tokenizer)
+        hidden_states = self.encode_relation(hidden_states, input_ids, attention_mask, self.model.embed_tokens)
 
         #########################################################################
         logits = self.lm_head(hidden_states)
@@ -264,6 +266,10 @@ class KGQwen2ForCausalLM(Qwen2ForCausalLM):
         )
 
 
+def rest_parameter(value):
+    if isinstance(value, torch.Tensor):
+        stdv = math.sqrt(6.0 / (value.size(-2) + value.size(-1)))
+        value.data.uniform_(-stdv, stdv)
 
 
 class KGEmbedding(nn.Module):
@@ -273,15 +279,29 @@ class KGEmbedding(nn.Module):
         self.channels = channels
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
+        # 通过W_q、W_k去计算X_i与X_j之间的相关性而不是显示存储在R_map中
         self.W_q = nn.Linear(channels, channels)
         self.W_k = nn.Linear(channels, channels)
-        self.R_map = nn.Parameter(torch.Tensor(node_num, node_num, relation_num))
+        self.R_i = torch.arange(node_num, dtype=torch.int) # 映射不同节点关系索引
+
+    def init_params(self):
+        rest_parameter(self.R_map)
 
     def _encode_relation(self, h_t, input_ids, attention_mask, embedding: nn.Embedding):
         bsz, node_num, channels = h_t.size()
         device = h_t.device
         dtype = h_t.dtype
-        mask = attention_mask.bool()
+
+        if attention_mask is not None:
+            mask = attention_mask.bool()
+            self.adjacent_node(h_t, input_ids, mask, embedding, True)
+        else:
+            mask = None
+        if mask is None:
+            pass
+        return h_t
+        ###### 需要提取出start节点与target节点之间的关系，构建一个index = [[],[]] sec = [[],[]]数组存放关系再构建使用PYG对向量进行汇聚
+        # 可以使用scatter_add进行汇聚操作，才此之间乘以R_map
         # input_ids = input_ids[attention_mask>0] # 去除填充节点索引
         # neighbor_ids = self.R_map[input_ids, :, :] # (nodes, :, relation_num=1)
         #
@@ -292,6 +312,31 @@ class KGEmbedding(nn.Module):
         # h_t_s = self.W_k(h_t) # (bsz, node_num, channels)
         # attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)
         pass
+
+    def adjacent_node(
+            self,
+            h_t,
+            input_ids : torch.Tensor,
+            attention_mask : torch.Tensor,
+            embedding: nn.Embedding,
+            keepdim : bool = True
+            ):
+        token_embedding = embedding(self.R_i.unsqueeze(0).to(input_ids.device))
+        token_embedding = token_embedding.squeeze(0)
+
+        max_node = attention_mask.sum(dim=-1, keepdim=True).max()
+        start = input_ids[attention_mask]
+        R_i = self.R_i.repeat(start.size(0), 1)
+        # 然后对最后一维进行打乱
+        bsz, nodes = R_i.size()
+        shuffled_indices = torch.randperm(nodes)
+        R_i = R_i[:, shuffled_indices]
+        R_i = R_i[:, 0:math.floor(nodes*0.5)]
+        target_j = self.W_k(token_embedding)
+        target_i = self.W_q()
+        pass
+
+
 
     def _forward(self, query_states, input_ids, attention_mask, embedding: nn.Embedding):
         # input_dtype = query_states.dtype

@@ -1,5 +1,6 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+
 from My_Unit import load_config, load_base_model, smart_to_dtype_and_device, load_my_dataset
 
 def load_model(elements):
@@ -40,11 +41,11 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
     pass
 
 def run(model, dataloader, tokenizer):
-    model.train()
+    model.eval()
     for data in dataloader:
         data = prepare_inputs(data, model)
         input_ids = data['input_ids']
-        outputs = model(input_ids=input_ids, tokenizer=tokenizer)
+        outputs = model(input_ids=input_ids, attention_mask=data['attention_mask'],tokenizer=tokenizer)
 
 
 
