@@ -344,7 +344,7 @@ class KGEmbedding(nn.Module):
 
         with torch.cuda.amp.autocast():  # AMP 节省显存
             score_s2t = torch.matmul(x_start, x_target.transpose(0, 1))  # [V, s]
-        score_s2t = torch.matmul(x_start, x_target.transpose(0, 1))  # [B, V]
+
         if self.tarning:
             score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
         score_s2t = torch.softmax(score_s2t, dim=-1)  # [B, V]
