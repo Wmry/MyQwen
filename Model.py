@@ -276,6 +276,7 @@ class KGEmbedding(nn.Module):
     #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
     def __init__(self, channels, hidden_channels, relation_num, node_num):
         super(KGEmbedding, self).__init__()
+        self.k = 128
         self.channels = channels
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
@@ -283,6 +284,7 @@ class KGEmbedding(nn.Module):
         self.W_q = nn.Linear(channels, channels)
         self.W_k = nn.Linear(channels, channels)
         self.W_v = nn.Linear(channels, channels)
+        self.update = nn.Linear(channels, channels)
         self.R_i = torch.arange(node_num, dtype=torch.int) # 映射不同节点关系索引
 
     def init_params(self):
@@ -292,10 +294,12 @@ class KGEmbedding(nn.Module):
         bsz, node_num, channels = h_t.size()
         device = h_t.device
         dtype = h_t.dtype
+        x_residual = h_t
 
         if attention_mask is not None:
             mask = attention_mask.bool()
-            score, x = self.get_adj(h_t, input_ids, mask, embedding, True)  # [B, V_s, V_t]
+            h_t = self.aggregate_n(h_t, input_ids, mask, embedding, True)  # [B, V_s, V_t]
+            h_t = x_residual + self.update(h_t)
 
         return h_t
         ###### 需要提取出start节点与target节点之间的关系，构建一个index = [[],[]] sec = [[],[]]数组存放关系再构建使用PYG对向量进行汇聚
@@ -311,7 +315,7 @@ class KGEmbedding(nn.Module):
         # attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)
         pass
 
-    def get_adj(self, h_t, input_ids, attention_mask, embedding, keepdim=True):
+    def aggregate_n(self, h_t, input_ids, attention_mask, embedding, keepdim=True):
         # 直接取 embedding.weight
         token_embedding = embedding.weight  # [V, d]
 
@@ -320,36 +324,28 @@ class KGEmbedding(nn.Module):
         bsz = start.size(0)
         nodes = token_embedding.size(0)
 
-        if self.tarning:
-            # 随机采样 target，不用全 shuffle
-            target_idx = torch.stack([
-                torch.randperm(nodes, device=input_ids.device)[:nodes // 2]
-                for _ in range(bsz)
-            ])  # [B, K]
-        else:
-            target_idx = torch.stack([
-                torch.randperm(nodes, device=input_ids.device)
-                for _ in range(bsz)
-            ])  # [B, K]
-
-        # 构建 mask
-        target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
-        target.scatter_(1, target_idx, True)
-
-
         # Q/K/V 投影
         x_target = self.W_k(token_embedding)  # [V, d]
-        x_start = self.W_q(token_embedding[start])  # [B, d]
+        x_start = self.W_q(h_t[attention_mask, :])  # [B, d]
         x_v = self.W_v(token_embedding)
 
-        with torch.cuda.amp.autocast():  # AMP 节省显存
-            score_s2t = torch.matmul(x_start, x_target.transpose(0, 1))  # [V, s]
+        # with torch.cuda.amp.autocast():  # AMP 节省显存
+        score_s2t = torch.matmul(x_start, x_target.transpose(0, 1))  # [V, s]
 
-        if self.tarning:
+        if self.training:
+            # 构建 mask
+            target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
+            topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
+            target.scatter_(1, topk_idx, True)
             score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
+
         score_s2t = torch.softmax(score_s2t, dim=-1)  # [B, V]
 
-        return score_s2t, x_v # [B, V_s, V_t]
+        h_t = torch.matmul(score_s2t, x_v)
+        return h_t # [B, V_s, V_t]
+
+    def update_n(self, h_t):
+        return F.gelu(self.update(h_t))
 
     def _forward(self, query_states, input_ids, attention_mask, embedding: nn.Embedding):
         # input_dtype = query_states.dtype
@@ -365,3 +361,4 @@ class KGEmbedding(nn.Module):
 
     def forward(self, query_states, input_ids, attention_mask, embedding: nn.Embedding):
         return self._forward(query_states, input_ids, attention_mask, embedding)
+

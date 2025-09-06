@@ -1,4 +1,5 @@
 # DeepSeek结构学习
+一箱古井酒、两条中华烟
 
 <font color=red>红色表示暂定需要确定的</font>
 

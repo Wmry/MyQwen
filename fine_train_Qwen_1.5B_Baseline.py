@@ -41,7 +41,7 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
     pass
 
 def run(model, dataloader, tokenizer):
-    model.eval()
+    model.train()
     for data in dataloader:
         data = prepare_inputs(data, model)
         input_ids = data['input_ids']
