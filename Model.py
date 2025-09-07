@@ -276,7 +276,7 @@ class KGEmbedding(nn.Module):
     #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
     def __init__(self, channels, hidden_channels, relation_num, node_num):
         super(KGEmbedding, self).__init__()
-        self.k = 128
+        self.k = 256
         self.channels = channels
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
@@ -285,7 +285,7 @@ class KGEmbedding(nn.Module):
         self.W_k = nn.Linear(channels, channels)
         self.W_v = nn.Linear(channels, channels)
         self.update = nn.Linear(channels, channels)
-        self.R_i = torch.arange(node_num, dtype=torch.int) # 映射不同节点关系索引
+        # self.R_i = torch.arange(node_num, dtype=torch.int)  # 映射不同节点关系索引
 
     def init_params(self):
         rest_parameter(self.R_map)
@@ -316,6 +316,7 @@ class KGEmbedding(nn.Module):
         pass
 
     def aggregate_n(self, h_t, input_ids, attention_mask, embedding, keepdim=True):
+        #
         # 直接取 embedding.weight
         token_embedding = embedding.weight  # [V, d]
 
@@ -330,19 +331,28 @@ class KGEmbedding(nn.Module):
         x_v = self.W_v(token_embedding)
 
         # with torch.cuda.amp.autocast():  # AMP 节省显存
-        score_s2t = torch.matmul(x_start, x_target.transpose(0, 1))  # [V, s]
+        score_s2t = torch.matmul(x_start, x_target.transpose(0, 1)) / math.sqrt(self.channels)  # [V, s]
 
         if self.training:
             # 构建 mask
+            # 随机采样 target，不用全 shuffle
+            mask = torch.stack([
+                torch.randperm(nodes, device=input_ids.device)[:nodes // 2]
+                for _ in range(bsz)
+            ])  # [B, K]
             target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
+            target.scatter_(1, mask, True)
+            score_s2t = score_s2t.masked_fill(~target, -float('inf'))
             topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
+            target[:] = False
             target.scatter_(1, topk_idx, True)
             score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
 
         score_s2t = torch.softmax(score_s2t, dim=-1)  # [B, V]
 
-        h_t = torch.matmul(score_s2t, x_v)
-        return h_t # [B, V_s, V_t]
+        h_hat_t = torch.matmul(score_s2t, x_v)
+        h_t[attention_mask] = h_hat_t
+        return h_t  # [B, V_s, V_t]
 
     def update_n(self, h_t):
         return F.gelu(self.update(h_t))
