@@ -334,8 +334,7 @@ class KGEmbedding(nn.Module):
         score_s2t = torch.matmul(x_start, x_target.transpose(0, 1)) / math.sqrt(self.channels)  # [V, s]
 
         if self.training:
-            # 构建 mask
-            # 随机采样 target，不用全 shuffle
+            # 构建 mask 随机采样 target，不用全 shuffle
             mask = torch.stack([
                 torch.randperm(nodes, device=input_ids.device)[:nodes // 2]
                 for _ in range(bsz)
