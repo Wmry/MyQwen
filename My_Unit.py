@@ -3,8 +3,8 @@ import torch
 from datasets import load_dataset
 from scipy.constants import value
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForLanguageModeling
-from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
-from Model import KGQwen2Attention, KGQwen2ForCausalLM
+from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Model
+from Model import KGQwen2Attention, KGQwen2ForCausalLM, KGQwen2Model
 
 params = ['DeepSeek-version', 'DeepSeek-model_path', 'DeepSeek-max_new_tokens',
           'DeepSeek-generated', 'LoRA-enabled', 'LoRA-rank', 'LoRA-alpha', 'LoRA-dropout',
@@ -68,7 +68,7 @@ def load_base_model(elements):
 
     print(f"Using device: " + elements['base_info']['device'])
     tokenizer_tmp = AutoTokenizer.from_pretrained(elements['base_info']['model_path'])
-    model_tmp = KGQwen2ForCausalLM.from_pretrained(
+    model_tmp = AutoModelForCausalLM.from_pretrained(
         elements['base_info']['model_path'],
         device_map=elements['base_info']['device'],
         torch_dtype=torch_dtype
@@ -79,23 +79,26 @@ def load_base_model(elements):
     return tokenizer_tmp, model_tmp
 
 
-def replace_attention_layers(model, top_config=None, elements=None):
+def replace_attention_layers(model, top_config=None, elements=None, current_depth=0):
     """
-    递归替换模型中的所有Qwen2Attention层
-    top_config: 顶层模型的config对象，用于递归传递
+    递归替换模型中的Qwen2Attention层，仅替换第一层和中间层
+
+    Args:
+        model: 要处理的模型
+        top_config: 顶层模型的config对象，用于递归传递
+        elements: 包含设备等信息的字典
+        current_depth: 当前递归深度，用于跟踪处理进度
     """
     # 如果是顶层调用，保存config
     if top_config is None:
         top_config = model.config
 
+    # 遍历所有子模块
     for name, module in model.named_children():
-        if isinstance(module, Qwen2Attention):
-            # 创建知识增强版注意力层，使用顶层config
-            new_attn = KGQwen2Attention(
+        if isinstance(module, Qwen2Model):
+            new_attn = KGQwen2Model(
                 top_config,  # 使用顶层config而不是当前模块的config
-                layer_idx=module.layer_idx
             ).to(device=elements['device'], dtype=top_config.torch_dtype)
-
             # 复制原始权重
             attn_state_dict = module.state_dict()
             new_attn_state_dict = new_attn.state_dict()
@@ -109,9 +112,42 @@ def replace_attention_layers(model, top_config=None, elements=None):
             new_attn.eval()
 
             setattr(model, name, new_attn)
+
+        # if isinstance(module, Qwen2Attention):
+            # # 检查是否是第一层或中间层
+            # if hasattr(module, 'layer_idx'):
+            #     layer_idx = module.layer_idx
+            #     # 判断是否为第一层或中间层
+            #     is_first_layer = (layer_idx == 0)
+            #     is_middle_layer = (layer_idx == top_config.num_hidden_layers // 2)
+            #
+            #     if is_first_layer or is_middle_layer:
+            #         print(f"Replacing layer {layer_idx} with KGQwen2Attention")
+            #
+            #         # 创建知识增强版注意力层，使用顶层config
+            #         new_attn = KGQwen2Attention(
+            #             top_config,  # 使用顶层config而不是当前模块的config
+            #             layer_idx=layer_idx
+            #         ).to(device=elements['device'], dtype=top_config.torch_dtype)
+            #
+            #         # 复制原始权重
+            #         attn_state_dict = module.state_dict()
+            #         new_attn_state_dict = new_attn.state_dict()
+            #
+            #         # 只复制匹配的键
+            #         for key in attn_state_dict:
+            #             if key in new_attn_state_dict:
+            #                 new_attn_state_dict[key].copy_(attn_state_dict[key])
+            #
+            #         # 将新层设置为评估模式（如果需要）
+            #         new_attn.eval()
+            #
+            #         setattr(model, name, new_attn)
+            # else:
+            #     print(f"Warning: Qwen2Attention module '{name}' has no layer_idx attribute")
         else:
             # 递归处理子模块，传递顶层config
-            replace_attention_layers(module, top_config, elements)
+            replace_attention_layers(module, top_config, elements, current_depth + 1)
 
 # 针对 inputs 做智能处理：input_ids 保持 long，其它可以变 dtype
 def smart_to_dtype_and_device(inputs, model_dtype, device):
@@ -158,27 +194,27 @@ def load_my_dataset(txt_path, txt_name="TestKG.txt",  tokenizer=None, batch_size
     train_dataset = train_dataset.remove_columns(["text"])
     test_dataset = test_dataset.remove_columns(["text"])
 
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,
-        pad_to_multiple_of = 8  # 可选：提高GPU效率
-    )
-
-    # 7. 转为 PyTorch DataLoader
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=batch_size,  # 样本数
-        shuffle=True,
-        collate_fn=data_collator
-    )
-
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=data_collator
-    )
-    return train_loader, test_loader
+    # data_collator = DataCollatorForLanguageModeling(
+    #     tokenizer=tokenizer,
+    #     mlm=False,
+    #     pad_to_multiple_of = 8  # 可选：提高GPU效率
+    # )
+    #
+    # # 7. 转为 PyTorch DataLoader
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset,
+    #     batch_size=batch_size,  # 样本数
+    #     shuffle=True,
+    #     collate_fn=data_collator
+    # )
+    #
+    # test_loader = torch.utils.data.DataLoader(
+    #     test_dataset,
+    #     batch_size=batch_size,
+    #     shuffle=False,
+    #     collate_fn=data_collator
+    # )
+    return train_dataset, test_dataset
 
 if __name__ == "__main__":
     params = load_config("./params.xml")

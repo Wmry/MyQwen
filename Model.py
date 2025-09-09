@@ -1,19 +1,25 @@
 import torch
 from numpy import dtype
+from numpy.f2py.auxfuncs import throw_error
 from torch import nn
 import math
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
-from transformers import Qwen2Config, PreTrainedTokenizer
-from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Attention, logger, Qwen2RotaryEmbedding, apply_rotary_pos_emb, repeat_kv, Cache, Qwen2DecoderLayer
+from transformers import Qwen2Config, PreTrainedTokenizer, DynamicCache
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask_for_sdpa, \
+    _prepare_4d_causal_attention_mask
+from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
+from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Attention, logger, Qwen2RotaryEmbedding, \
+    apply_rotary_pos_emb, repeat_kv, Cache, Qwen2DecoderLayer, Qwen2Model, QWEN2_INPUTS_DOCSTRING, Qwen2RMSNorm
 from typing import List, Optional, Tuple, Union
 from torch import nn
+from transformers.utils import add_start_docstrings_to_model_forward
 
 
 class KGQwen2DecoderLayer(Qwen2DecoderLayer):
     def __init__(self, config: Qwen2Config, layer_idx: int):
         super().__init__(config, layer_idx)
+        self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.vocab_size)
 
     def forward(
         self,
@@ -23,6 +29,7 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        embed_tokens : nn.Embedding = None
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -52,7 +59,11 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
             use_cache=use_cache,
         )
         hidden_states = residual + hidden_states # 短残差链接
+        ############################加入知识图谱###########################
 
+        hidden_states = self.encode_relation(hidden_states, attention_mask, embed_tokens)
+
+        ############################加入知识图谱###########################
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
@@ -69,10 +80,187 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
 
         return outputs
 
+class KGQwen2Model(Qwen2Model):
+    """
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`Qwen2DecoderLayer`]
+
+    Args:
+        config: Qwen2Config
+    """
+
+    def __init__(self, config: Qwen2Config):
+        super().__init__(config)
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
+    @add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # retrieve input_ids and inputs_embeds
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
+        elif input_ids is not None:
+            batch_size, seq_length = input_ids.shape
+        elif inputs_embeds is not None:
+            batch_size, seq_length, _ = inputs_embeds.shape
+        else:
+            raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
+
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                )
+                use_cache = False
+
+        past_key_values_length = 0
+
+        if use_cache:
+            use_legacy_cache = not isinstance(past_key_values, Cache)
+            if use_legacy_cache:
+                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+            past_key_values_length = past_key_values.get_usable_length(seq_length)
+
+        if position_ids is None:
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            position_ids = torch.arange(
+                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+        else:
+            position_ids = position_ids.view(-1, seq_length).long()
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+        if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
+            is_padding_right = attention_mask[:, -1].sum().item() != batch_size
+            if is_padding_right:
+                raise ValueError(
+                    "You are attempting to perform batched generation with padding_side='right'"
+                    " this may lead to unexpected behaviour for Flash Attention version of Qwen2. Make sure to "
+                    " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
+                )
+
+        if self._attn_implementation == "flash_attention_2":
+            # 2d mask is passed through the layers
+            attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
+        elif self._attn_implementation == "sdpa" and not output_attentions:
+            # output_attentions=True can not be supported when using SDPA, and we fall back on
+            # the manual implementation that requires a 4D causal mask in all cases.
+            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window=self.config.sliding_window,
+            )
+        else:
+            # 4d mask is passed through the layers
+            attention_mask = _prepare_4d_causal_attention_mask(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window=self.config.sliding_window,
+            )
+
+        hidden_states = inputs_embeds
+
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = None
+
+        for decoder_layer in self.layers:
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            if self.gradient_checkpointing and self.training:
+                layer_outputs = self._gradient_checkpointing_func(
+                    decoder_layer.__call__,
+                    hidden_states,
+                    attention_mask,
+                    position_ids,
+                    past_key_values,
+                    output_attentions,
+                    use_cache,
+                )
+
+            elif isinstance(decoder_layer, KGQwen2DecoderLayer):
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_values,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    embed_tokens = self.embed_tokens,
+                )
+
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_values,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                )
+
+            hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        hidden_states = self.norm(hidden_states)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = None
+        if use_cache:
+            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
+
+        if not return_dict:
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+        )
+
 class KGQwen2Attention(Qwen2Attention):
     def __init__(self, config: Qwen2Config, layer_idx: Optional[int] = None, relation_model: nn.Module = None):
         super().__init__(config, layer_idx)
-        self.relation_model = relation_model
+        self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.vocab_size)
 
     def forward(
             self,
@@ -145,6 +333,7 @@ class KGQwen2Attention(Qwen2Attention):
         # 在此处插入计算knowledge Graph Relation的词嵌入kg_relation_output,通过权重W将其融入attn_output中
         # torch.matmul(attn_weights, value_states)  attn_weights size (bsz, head_attn, q_len, q_len)
         #                                           value_states size (bsz, head_attn, q_len, channels)
+        attn_output = self.encode_relation(attn_output, attention_mask, self.model.embed_tokens)
 
         ################################################################################################################
 
@@ -290,7 +479,7 @@ class KGEmbedding(nn.Module):
     def init_params(self):
         rest_parameter(self.R_map)
 
-    def _encode_relation(self, h_t, input_ids, attention_mask, embedding: nn.Embedding):
+    def _encode_relation(self, h_t, attention_mask, embedding: nn.Embedding):
         bsz, node_num, channels = h_t.size()
         device = h_t.device
         dtype = h_t.dtype
@@ -298,8 +487,11 @@ class KGEmbedding(nn.Module):
 
         if attention_mask is not None:
             mask = attention_mask.bool()
-            h_t = self.aggregate_n(h_t, input_ids, mask, embedding, True)  # [B, V_s, V_t]
+            h_t = self.aggregate_n(h_t, mask, embedding, True)  # [B, V_s, V_t]
             h_t = x_residual + self.update(h_t)
+
+        else:
+            throw_error("attention mask is required.")
 
         return h_t
         ###### 需要提取出start节点与target节点之间的关系，构建一个index = [[],[]] sec = [[],[]]数组存放关系再构建使用PYG对向量进行汇聚
@@ -315,14 +507,13 @@ class KGEmbedding(nn.Module):
         # attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)
         pass
 
-    def aggregate_n(self, h_t, input_ids, attention_mask, embedding, keepdim=True):
+    def aggregate_n(self, h_t, attention_mask, embedding, keepdim=True):
         #
         # 直接取 embedding.weight
         token_embedding = embedding.weight  # [V, d]
 
         # batch 有效 token
-        start = input_ids[attention_mask]  # [B]
-        bsz = start.size(0)
+        bsz = attention_mask.size(0)
         nodes = token_embedding.size(0)
 
         # Q/K/V 投影
@@ -332,21 +523,22 @@ class KGEmbedding(nn.Module):
 
         # with torch.cuda.amp.autocast():  # AMP 节省显存
         score_s2t = torch.matmul(x_start, x_target.transpose(0, 1)) / math.sqrt(self.channels)  # [V, s]
+        target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
 
         if self.training:
             # 构建 mask 随机采样 target，不用全 shuffle
             mask = torch.stack([
-                torch.randperm(nodes, device=input_ids.device)[:nodes // 2]
+                torch.randperm(nodes, device=h_t.device)[:nodes // 2]
                 for _ in range(bsz)
             ])  # [B, K]
-            target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
             target.scatter_(1, mask, True)
             score_s2t = score_s2t.masked_fill(~target, -float('inf'))
-            topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
-            target[:] = False
-            target.scatter_(1, topk_idx, True)
-            score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
 
+        # 采样前k个相邻节点的特征
+        topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
+        target[:] = False
+        target.scatter_(1, topk_idx, True)
+        score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
         score_s2t = torch.softmax(score_s2t, dim=-1)  # [B, V]
 
         h_hat_t = torch.matmul(score_s2t, x_v)
@@ -356,7 +548,7 @@ class KGEmbedding(nn.Module):
     def update_n(self, h_t):
         return F.gelu(self.update(h_t))
 
-    def _forward(self, query_states, input_ids, attention_mask, embedding: nn.Embedding):
+    def _forward(self, query_states, attention_mask, embedding: nn.Embedding):
         # input_dtype = query_states.dtype
         # (bsz, n_len, channels) = query_states.shape
         # x1 = self.encode_relation(torch.cat([query_states, key_states], dim=-1))
@@ -366,8 +558,8 @@ class KGEmbedding(nn.Module):
         # x2 = torch.bmm(x1, x1.transpose(1, 2))
         # relation = x2.reshape(bsz, -1, n_len, n_len)
         # return relation.to(input_dtype)
-        return self._encode_relation(query_states, input_ids, attention_mask, embedding)
+        return self._encode_relation(query_states, attention_mask, embedding)
 
-    def forward(self, query_states, input_ids, attention_mask, embedding: nn.Embedding):
-        return self._forward(query_states, input_ids, attention_mask, embedding)
+    def forward(self, query_states, attention_mask, embedding: nn.Embedding):
+        return self._forward(query_states, attention_mask, embedding)
 
