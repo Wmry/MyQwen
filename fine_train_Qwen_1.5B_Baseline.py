@@ -9,6 +9,7 @@ import torch.optim as optim
 from My_Unit import load_config, load_base_model, smart_to_dtype_and_device, load_my_dataset, load_my_dataset_hugging_face_method
 import math
 import matplotlib.pyplot as plt
+from peft import LoraConfig, get_peft_model, TaskType
 
 # 配置日志
 logging.basicConfig(
@@ -64,30 +65,28 @@ def run(model, dataloader, tokenizer):
         input_ids = data['input_ids']
         outputs = model(input_ids=input_ids, attention_mask=data['attention_mask'],tokenizer=tokenizer)
 
-def setup_selective_training(model_kg_qwen : torch.nn.Module):
-    for param in model_kg_qwen.parameters():
-        param.requires_grad = False
-
-    for name, module in model_kg_qwen.model.layers.named_modules():
-        if isinstance(module, KGQwen2DecoderLayer):
-            for param_name, param in module.named_parameters():
-                if param_name.find('encode_relation') >= 0:
-                    print(f"将训练KGQwen2Attention层: {param_name}")
-                    param.requires_grad = True
-
-    # 训练 lm_head
-    for param in model_kg_qwen.lm_head.parameters():
-        param.requires_grad = True
+def apply_lora(model: torch.nn.Module):
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,  # 自回归语言模型
+        r=8,                           # 低秩维度，可以调大
+        lora_alpha=32,                 # 缩放因子
+        lora_dropout=0.1,              # LoRA dropout
+        target_modules=["q_proj", "v_proj"],
+        # 👆 你要训练的 attention 线性层名称，比如 Qwen 中是 q_proj/v_proj
+        # 如果你要训练 encode_relation，可以写 encode_relation.W_q / W_v 等
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+    return model
 
 # =========================
-# 3. 定义评价指标：困惑度 Perplexity
+# 2. 评价指标（PPL）
 # =========================
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     shift_logits = logits[..., :-1, :].reshape(-1, logits.shape[-1])
     shift_labels = labels[..., 1:].reshape(-1)
 
-    # 忽略 -100 的 label（transformers 默认 mask）
     loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
     loss = loss_fct(
         torch.tensor(shift_logits, dtype=torch.float32),
@@ -97,44 +96,61 @@ def compute_metrics(eval_pred):
     return {"perplexity": perplexity}
 
 if __name__ == "__main__":
-    try:
-        params = load_config("./params.xml")
-        tokenizer, model = load_model(params)
-        train_path = params['path_set']['train_data']
-        train_txtfile = params['path_set']['txtfile_name']
-        model_output_path = params['path_set']['output_dir']
-        model_train_log = params['path_set']['logging_dir']
+    # =========================
+    # 加载模型与数据
+    # =========================
+    params = load_config("./params.xml")
+    tokenizer = AutoTokenizer.from_pretrained(params['model']['pretrained_name'])
+    model = AutoModelForCausalLM.from_pretrained(
+        params['model']['pretrained_name'],
+        torch_dtype=torch.bfloat16,  # 或者 float16，节省显存
+        device_map="auto"
+    )
 
-    except Exception as e:
-        logger.error("加载模型时发生错误: %s", str(e), exc_info=True)
-        # 可以选择重新抛出异常或进行其他处理
-        raise
-    train_dataset, valid_dataset, test_dataset, data_collator = load_my_dataset_hugging_face_method(txt_path=train_path, txt_name=train_txtfile, tokenizer=tokenizer)
+    train_path = params['path_set']['train_data']
+    train_txtfile = params['path_set']['txtfile_name']
+    model_output_path = params['path_set']['output_dir']
+    model_train_log = params['path_set']['logging_dir']
 
-    setup_selective_training(model)
-
+    train_dataset, valid_dataset, test_dataset, data_collator = load_my_dataset_hugging_face_method(
+        txt_path=train_path,
+        txt_name=train_txtfile,
+        tokenizer=tokenizer
+    )
 
     # =========================
-    # 4. 设置训练参数
+    # 应用 LoRA
+    # =========================
+    model = apply_lora(model)
+
+    # =========================
+    # 开启 Gradient Checkpointing
+    # =========================
+    model.gradient_checkpointing_enable()
+
+    # =========================
+    # 训练参数
     # =========================
     training_args = TrainingArguments(
         output_dir="./results",
-        eval_strategy="epoch",  # 每个 epoch 评估
-        save_strategy="epoch",  # 每个 epoch 保存
-        save_total_limit=2,  # 最多保留2个 checkpoint
-        load_best_model_at_end=True,  # 自动加载最佳模型
-        metric_for_best_model="perplexity",  # 按 perplexity 选最优
-        greater_is_better=False,  # PPL 越小越好
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=2,
+        load_best_model_at_end=True,
+        metric_for_best_model="perplexity",
+        greater_is_better=False,
         per_device_train_batch_size=5,
         per_device_eval_batch_size=5,
         num_train_epochs=3,
         logging_dir=model_train_log,
         logging_strategy="epoch",
-        report_to="none",  # 禁止 wandb 报错
+        report_to="none",
+        fp16=True,   # 如果支持 A100/V100, 可以启用 float16
+        gradient_checkpointing=True,  # 显存大幅下降
     )
 
     # =========================
-    # 5. 定义 Trainer
+    # Trainer
     # =========================
     trainer = Trainer(
         model=model,
@@ -142,29 +158,21 @@ if __name__ == "__main__":
         train_dataset=train_dataset,
         eval_dataset=valid_dataset,
         tokenizer=tokenizer,
-        data_collator=data_collator,  # 动态padding
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
     )
 
     # =========================
-    # 6. 训练并保存最佳模型
+    # 训练并保存
     # =========================
-    try:
-        train_result = trainer.train()
-    except Exception as e:
-        logger.error("训练过程中发生错误: %s", str(e), exc_info=True)
-        # 可以选择重新抛出异常或进行其他处理
-        raise
+    trainer.train()
     trainer.save_model(model_output_path)
 
     # =========================
-    # 7. 绘制指标曲线
+    # 绘制曲线
     # =========================
     logs = trainer.state.log_history
-
-    epochs = []
-    ppl = []
-    losses = []
+    epochs, ppl, losses = [], [], []
 
     for entry in logs:
         if "epoch" in entry:
