@@ -1,10 +1,22 @@
+import logging
+
+from safetensors.torch import save_model
+from scipy.ndimage import label
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 import torch
-from Model import KGQwen2Attention
+from Model import KGQwen2Attention, KGQwen2DecoderLayer
 import torch.optim as optim
-from My_Unit import load_config, load_base_model, smart_to_dtype_and_device, load_my_dataset
+from My_Unit import load_config, load_base_model, smart_to_dtype_and_device, load_my_dataset, load_my_dataset_hugging_face_method
 import math
 import matplotlib.pyplot as plt
+
+# 配置日志
+logging.basicConfig(
+    filename='training.log',
+    level=logging.ERROR,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 def load_model(elements):
     tokenizer_tmp, model_tmp = load_base_model(elements)
@@ -57,7 +69,7 @@ def setup_selective_training(model_kg_qwen : torch.nn.Module):
         param.requires_grad = False
 
     for name, module in model_kg_qwen.model.layers.named_modules():
-        if isinstance(module, KGQwen2Attention):
+        if isinstance(module, KGQwen2DecoderLayer):
             for param_name, param in module.named_parameters():
                 if param_name.find('encode_relation') >= 0:
                     print(f"将训练KGQwen2Attention层: {param_name}")
@@ -85,11 +97,19 @@ def compute_metrics(eval_pred):
     return {"perplexity": perplexity}
 
 if __name__ == "__main__":
-    params = load_config("./params.xml")
-    tokenizer, model = load_model(params)
-    train_path = params['path_set']['train_data']
-    train_txtfile = params['path_set']['txtfile_name']
-    train_dataset, test_dataset = load_my_dataset(txt_path=train_path, txt_name=train_txtfile, tokenizer=tokenizer)
+    try:
+        params = load_config("./params.xml")
+        tokenizer, model = load_model(params)
+        train_path = params['path_set']['train_data']
+        train_txtfile = params['path_set']['txtfile_name']
+        model_output_path = params['path_set']['output_dir']
+        model_train_log = params['path_set']['logging_dir']
+
+    except Exception as e:
+        logger.error("加载模型时发生错误: %s", str(e), exc_info=True)
+        # 可以选择重新抛出异常或进行其他处理
+        raise
+    train_dataset, valid_dataset, test_dataset, data_collator = load_my_dataset_hugging_face_method(txt_path=train_path, txt_name=train_txtfile, tokenizer=tokenizer)
 
     setup_selective_training(model)
 
@@ -105,10 +125,10 @@ if __name__ == "__main__":
         load_best_model_at_end=True,  # 自动加载最佳模型
         metric_for_best_model="perplexity",  # 按 perplexity 选最优
         greater_is_better=False,  # PPL 越小越好
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
+        per_device_train_batch_size=5,
+        per_device_eval_batch_size=5,
         num_train_epochs=3,
-        logging_dir="./logs",
+        logging_dir=model_train_log,
         logging_strategy="epoch",
         report_to="none",  # 禁止 wandb 报错
     )
@@ -120,16 +140,22 @@ if __name__ == "__main__":
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=test_dataset,
+        eval_dataset=valid_dataset,
         tokenizer=tokenizer,
+        data_collator=data_collator,  # 动态padding
         compute_metrics=compute_metrics,
     )
 
     # =========================
     # 6. 训练并保存最佳模型
     # =========================
-    train_result = trainer.train()
-    trainer.save_model("./best_model")
+    try:
+        train_result = trainer.train()
+    except Exception as e:
+        logger.error("训练过程中发生错误: %s", str(e), exc_info=True)
+        # 可以选择重新抛出异常或进行其他处理
+        raise
+    trainer.save_model(model_output_path)
 
     # =========================
     # 7. 绘制指标曲线

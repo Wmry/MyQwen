@@ -29,7 +29,8 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
-        embed_tokens : nn.Embedding = None
+        embed_tokens : nn.Embedding = None,
+        inputs_mask : torch.Tensor = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -61,7 +62,7 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
         hidden_states = residual + hidden_states # 短残差链接
         ############################加入知识图谱###########################
 
-        hidden_states = self.encode_relation(hidden_states, attention_mask, embed_tokens)
+        hidden_states = self.encode_relation(hidden_states, inputs_mask, embed_tokens)
 
         ############################加入知识图谱###########################
         # Fully Connected
@@ -110,6 +111,7 @@ class KGQwen2Model(Qwen2Model):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+        inputs_mask = attention_mask
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -217,6 +219,7 @@ class KGQwen2Model(Qwen2Model):
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
+                    inputs_mask = inputs_mask,
                     embed_tokens = self.embed_tokens,
                 )
 
@@ -333,7 +336,6 @@ class KGQwen2Attention(Qwen2Attention):
         # 在此处插入计算knowledge Graph Relation的词嵌入kg_relation_output,通过权重W将其融入attn_output中
         # torch.matmul(attn_weights, value_states)  attn_weights size (bsz, head_attn, q_len, q_len)
         #                                           value_states size (bsz, head_attn, q_len, channels)
-        attn_output = self.encode_relation(attn_output, attention_mask, self.model.embed_tokens)
 
         ################################################################################################################
 
@@ -513,7 +515,7 @@ class KGEmbedding(nn.Module):
         token_embedding = embedding.weight  # [V, d]
 
         # batch 有效 token
-        bsz = attention_mask.size(0)
+        bsz = attention_mask.sum()
         nodes = token_embedding.size(0)
 
         # Q/K/V 投影
@@ -530,7 +532,7 @@ class KGEmbedding(nn.Module):
             mask = torch.stack([
                 torch.randperm(nodes, device=h_t.device)[:nodes // 2]
                 for _ in range(bsz)
-            ])  # [B, K]
+            ])  # [N, K]
             target.scatter_(1, mask, True)
             score_s2t = score_s2t.masked_fill(~target, -float('inf'))
 

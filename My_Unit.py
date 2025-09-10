@@ -3,15 +3,16 @@ import torch
 from datasets import load_dataset
 from scipy.constants import value
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForLanguageModeling
-from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Model
-from Model import KGQwen2Attention, KGQwen2ForCausalLM, KGQwen2Model
+from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Model, Qwen2DecoderLayer
+from Model import KGQwen2Attention, KGQwen2ForCausalLM, KGQwen2Model, KGQwen2DecoderLayer
 
 params = ['DeepSeek-version', 'DeepSeek-model_path', 'DeepSeek-max_new_tokens',
           'DeepSeek-generated', 'LoRA-enabled', 'LoRA-rank', 'LoRA-alpha', 'LoRA-dropout',
           'LoRA-target_modules', 'LoRA-bias', 'Training-learning_rate', 'Training-batch_size',
           'Training-num_epochs', 'Training-max_seq_length', 'Training-gradient_accumulation',
           'Training-warmup_ratio', 'Training-weight_decay', 'Training-lr_scheduler',
-          'Training-fp16', 'Training-bf16', 'Training-device','Paths-train_data','Paths-txtfile_name']
+          'Training-fp16', 'Training-bf16', 'Training-device','Paths-train_data','Paths-txtfile_name',
+          'Paths-output_dir', 'Paths-logging_dir']
 
 def get_value(element):
     """根据类型声明解析XML元素值"""
@@ -74,14 +75,41 @@ def load_base_model(elements):
         torch_dtype=torch_dtype
     )
 
+    replace_model(model=model_tmp, elements=elements['base_info'])
     replace_attention_layers(model=model_tmp, elements=elements['base_info'])
 
     return tokenizer_tmp, model_tmp
 
 
+def replace_model(model, top_config=None, elements=None, current_depth=0):
+    # 如果是顶层调用，保存config
+    if top_config is None:
+        top_config = model.config
+
+    # 遍历所有子模块
+    for name, module in model.named_children():
+        if isinstance(module, Qwen2Model):
+            new_model = KGQwen2Model(
+                top_config,  # 使用顶层config而不是当前模块的config
+            ).to(device=elements['device'], dtype=top_config.torch_dtype)
+            # 复制原始权重
+            model_state_dict = module.state_dict()
+            new_model_state_dict = new_model.state_dict()
+
+            # 只复制匹配的键
+            for key in model_state_dict:
+                if key in new_model_state_dict:
+                    new_model_state_dict[key].copy_(model_state_dict[key])
+
+            # 将新层设置为评估模式（如果需要）
+            new_model.eval()
+
+            setattr(model, name, new_model)
+
+
 def replace_attention_layers(model, top_config=None, elements=None, current_depth=0):
     """
-    递归替换模型中的Qwen2Attention层，仅替换第一层和中间层
+    递归替换模型中的Qwen2DecoderLayer层，仅替换第一层和中间层
 
     Args:
         model: 要处理的模型
@@ -93,58 +121,44 @@ def replace_attention_layers(model, top_config=None, elements=None, current_dept
     if top_config is None:
         top_config = model.config
 
+    # 初始化层计数器（仅在顶层调用时）
+    if current_depth == 0:
+        replace_attention_layers.layer_counter = 0
+        replace_attention_layers.total_layers = top_config.num_hidden_layers
+
     # 遍历所有子模块
     for name, module in model.named_children():
-        if isinstance(module, Qwen2Model):
-            new_attn = KGQwen2Model(
-                top_config,  # 使用顶层config而不是当前模块的config
-            ).to(device=elements['device'], dtype=top_config.torch_dtype)
-            # 复制原始权重
-            attn_state_dict = module.state_dict()
-            new_attn_state_dict = new_attn.state_dict()
+        if isinstance(module, Qwen2DecoderLayer):
+            # 获取当前层索引
+            layer_idx = replace_attention_layers.layer_counter
+            replace_attention_layers.layer_counter += 1
 
-            # 只复制匹配的键
-            for key in attn_state_dict:
-                if key in new_attn_state_dict:
-                    new_attn_state_dict[key].copy_(attn_state_dict[key])
+            # 判断是否为第一层或中间层
+            is_first_layer = (layer_idx == 0)
+            is_middle_layer = (layer_idx == replace_attention_layers.total_layers // 2)
 
-            # 将新层设置为评估模式（如果需要）
-            new_attn.eval()
+            if is_first_layer or is_middle_layer:
+                print(f"Replacing layer {layer_idx} with KGQwen2DecoderLayer")
 
-            setattr(model, name, new_attn)
+                # 创建知识增强版解码器层，使用顶层config
+                new_layer = KGQwen2DecoderLayer(
+                    top_config,  # 使用顶层config而不是当前模块的config
+                    layer_idx=layer_idx
+                ).to(device=elements['device'], dtype=top_config.torch_dtype)
 
-        # if isinstance(module, Qwen2Attention):
-            # # 检查是否是第一层或中间层
-            # if hasattr(module, 'layer_idx'):
-            #     layer_idx = module.layer_idx
-            #     # 判断是否为第一层或中间层
-            #     is_first_layer = (layer_idx == 0)
-            #     is_middle_layer = (layer_idx == top_config.num_hidden_layers // 2)
-            #
-            #     if is_first_layer or is_middle_layer:
-            #         print(f"Replacing layer {layer_idx} with KGQwen2Attention")
-            #
-            #         # 创建知识增强版注意力层，使用顶层config
-            #         new_attn = KGQwen2Attention(
-            #             top_config,  # 使用顶层config而不是当前模块的config
-            #             layer_idx=layer_idx
-            #         ).to(device=elements['device'], dtype=top_config.torch_dtype)
-            #
-            #         # 复制原始权重
-            #         attn_state_dict = module.state_dict()
-            #         new_attn_state_dict = new_attn.state_dict()
-            #
-            #         # 只复制匹配的键
-            #         for key in attn_state_dict:
-            #             if key in new_attn_state_dict:
-            #                 new_attn_state_dict[key].copy_(attn_state_dict[key])
-            #
-            #         # 将新层设置为评估模式（如果需要）
-            #         new_attn.eval()
-            #
-            #         setattr(model, name, new_attn)
-            # else:
-            #     print(f"Warning: Qwen2Attention module '{name}' has no layer_idx attribute")
+                # 复制原始权重
+                original_state_dict = module.state_dict()
+                new_state_dict = new_layer.state_dict()
+
+                # 只复制匹配的键
+                for key in original_state_dict:
+                    if key in new_state_dict:
+                        new_state_dict[key].copy_(original_state_dict[key])
+
+                # 将新层设置为评估模式（如果需要）
+                new_layer.eval()
+
+                setattr(model, name, new_layer)
         else:
             # 递归处理子模块，传递顶层config
             replace_attention_layers(module, top_config, elements, current_depth + 1)
@@ -194,27 +208,83 @@ def load_my_dataset(txt_path, txt_name="TestKG.txt",  tokenizer=None, batch_size
     train_dataset = train_dataset.remove_columns(["text"])
     test_dataset = test_dataset.remove_columns(["text"])
 
-    # data_collator = DataCollatorForLanguageModeling(
-    #     tokenizer=tokenizer,
-    #     mlm=False,
-    #     pad_to_multiple_of = 8  # 可选：提高GPU效率
-    # )
-    #
-    # # 7. 转为 PyTorch DataLoader
-    # train_loader = torch.utils.data.DataLoader(
-    #     train_dataset,
-    #     batch_size=batch_size,  # 样本数
-    #     shuffle=True,
-    #     collate_fn=data_collator
-    # )
-    #
-    # test_loader = torch.utils.data.DataLoader(
-    #     test_dataset,
-    #     batch_size=batch_size,
-    #     shuffle=False,
-    #     collate_fn=data_collator
-    # )
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False,
+        pad_to_multiple_of = 8  # 可选：提高GPU效率
+    )
+
+    # 7. 转为 PyTorch DataLoader
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=batch_size,  # 样本数
+        shuffle=True,
+        collate_fn=data_collator
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=data_collator
+    )
     return train_dataset, test_dataset
+
+from datasets import load_dataset
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling
+
+def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokenizer=None):
+    # 1. 加载本地txt文本，每行一个样本
+    dataset = load_dataset(
+        "text",
+        data_files={ "raw": f"{txt_path}/{txt_name}" },
+        encoding="GB18030"
+    )
+
+    # 2. 过滤空行和无效行
+    def filter_empty_lines(example):
+        stripped = example["text"].strip()
+        return stripped != "" and not stripped.isspace() and len(stripped) > 1
+
+    dataset = dataset["raw"].filter(filter_empty_lines)
+
+    # 3. 划分训练/验证/测试集 (80% train, 10% valid, 10% test)
+    dataset_split = dataset.train_test_split(test_size=0.2, seed=42)
+    test_valid_split = dataset_split["test"].train_test_split(test_size=0.5, seed=42)
+
+    train_dataset = dataset_split["train"]
+    valid_dataset = test_valid_split["train"]
+    test_dataset  = test_valid_split["test"]
+
+    # 4. 初始化分词器
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(
+            "D:/Users/xiangyu/download/Qwen_1.5B_Baseline",
+            trust_remote_code=True
+        )
+
+    # 5. 定义分词函数（注意：这里不手动生成 labels）
+    def tokenize_function(examples):
+        return tokenizer(
+            examples["text"],
+            truncation=True,
+            # 不用 max_length 固定填充，节省显存
+            # 不用 padding="max_length"，让 collator 动态处理
+        )
+
+    # 6. 对三个数据集做token化
+    train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+    valid_dataset = valid_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+    test_dataset  = test_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+
+    # 7. 定义 collator，自动生成 labels 并动态 padding
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False  # 自回归语言模型，不是MLM
+    )
+
+    return train_dataset, valid_dataset, test_dataset, data_collator
+
 
 if __name__ == "__main__":
     params = load_config("./params.xml")
