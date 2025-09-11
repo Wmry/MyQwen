@@ -9,7 +9,7 @@ import torch.optim as optim
 from My_Unit import load_config, load_base_model, smart_to_dtype_and_device, load_my_dataset, \
     load_my_dataset_hugging_face_method, print_trainable_parameters
 import math
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 from peft import LoraConfig, get_peft_model, TaskType
 
 # 配置日志
@@ -31,6 +31,7 @@ def prepare_inputs(inputs, model):
     param = next(model.parameters())
     device = param.device
     dtype = param.dtype
+    print("model device: ", device)
 
     return {
         k: v.to(device) if v.dtype in (torch.long, torch.int) else v.to(dtype=dtype, device=device)
@@ -181,23 +182,23 @@ if __name__ == "__main__":
     # =========================
     # 绘制曲线
     # =========================
-    # logs = trainer.state.log_history
-    # epochs, ppl, losses = [], [], []
-    #
-    # for entry in logs:
-    #     if "epoch" in entry:
-    #         if "eval_perplexity" in entry:
-    #             epochs.append(entry["epoch"])
-    #             ppl.append(entry["eval_perplexity"])
-    #         if "loss" in entry:
-    #             losses.append(entry["loss"])
-    #
-    # plt.figure(figsize=(8, 5))
-    # plt.plot(epochs, ppl, marker="o", label="Eval Perplexity")
-    # plt.plot(range(len(losses)), losses, linestyle="--", label="Train Loss")
-    # plt.xlabel("Epoch")
-    # plt.ylabel("Value")
-    # plt.legend()
-    # plt.grid()
-    # plt.title("Training & Evaluation Curve")
-    # plt.show()
+    logs = trainer.state.log_history
+    epochs, ppl, losses = [], [], []
+
+    for entry in logs:
+        if "epoch" in entry:
+            if "eval_perplexity" in entry:
+                epochs.append(entry["epoch"])
+                ppl.append(entry["eval_perplexity"])
+            if "loss" in entry:
+                losses.append(entry["loss"])
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, ppl, marker="o", label="Eval Perplexity")
+    plt.plot(range(len(losses)), losses, linestyle="--", label="Train Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Value")
+    plt.legend()
+    plt.grid()
+    plt.title("Training & Evaluation Curve")
+    plt.show()
