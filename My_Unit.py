@@ -1,4 +1,6 @@
 import xml.etree.ElementTree as ET
+
+import math
 import torch
 from datasets import load_dataset
 from scipy.constants import value
@@ -253,11 +255,21 @@ def load_my_dataset(txt_path, txt_name="TestKG.txt",  tokenizer=None, batch_size
 from datasets import load_dataset
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 
-def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokenizer=None):
+
+def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokenizer=None, target_multiple=32):
+    """
+    加载并预处理文本数据集，确保数据集大小是target_multiple的倍数
+
+    参数:
+    - txt_path: 文本文件路径
+    - txt_name: 文本文件名
+    - tokenizer: 分词器，如果为None则自动加载
+    - target_multiple: 目标倍数，确保数据集大小是该值的倍数
+    """
     # 1. 加载本地txt文本，每行一个样本
     dataset = load_dataset(
         "text",
-        data_files={ "raw": f"{txt_path}/{txt_name}" },
+        data_files={"raw": f"{txt_path}/{txt_name}"},
         encoding="GB18030"
     )
 
@@ -268,13 +280,32 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
 
     dataset = dataset["raw"].filter(filter_empty_lines)
 
-    # 3. 划分训练/验证/测试集 (80% train, 10% valid, 10% test)
-    dataset_split = dataset.train_test_split(test_size=0.2, seed=42)
-    test_valid_split = dataset_split["test"].train_test_split(test_size=0.5, seed=42)
+    # 计算调整后的数据集大小
+    def adjust_to_multiple(size, multiple):
+        """调整大小到最接近的multiple的倍数"""
+        return math.floor(size / multiple) * multiple
 
-    train_dataset = dataset_split["train"]
-    valid_dataset = test_valid_split["train"]
-    test_dataset  = test_valid_split["test"]
+    # 3. 划分训练/验证/测试集 (80% train, 10% valid, 10% test)
+    # 首先获取原始大小
+    total_size = len(dataset)
+    train_size = adjust_to_multiple(total_size * 0.8, target_multiple)
+    valid_test_size = adjust_to_multiple(total_size * 0.02, target_multiple)
+
+    # 使用select方法选择指定数量的样本
+    train_dataset = dataset.select(range(train_size))
+    remaining = dataset.select(range(train_size, total_size))
+
+    # 划分验证集和测试集
+    valid_dataset = remaining.select(range(valid_test_size))
+    test_dataset = remaining.select(range(valid_test_size, valid_test_size * 10))
+
+    print(f"数据集大小调整: 总样本 {total_size} -> 训练集 {len(train_dataset)}, "
+          f"验证集 {len(valid_dataset)}, 测试集 {len(test_dataset)}")
+
+    # 确保所有数据集大小都是target_multiple的倍数
+    assert len(train_dataset) % target_multiple == 0, "训练集大小不是目标倍数"
+    assert len(valid_dataset) % target_multiple == 0, "验证集大小不是目标倍数"
+    assert len(test_dataset) % target_multiple == 0, "测试集大小不是目标倍数"
 
     # 4. 初始化分词器
     if tokenizer is None:
@@ -283,30 +314,45 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
             trust_remote_code=True
         )
 
-    # 5. 定义分词函数（注意：这里不手动生成 labels）
+    # 添加填充token（如果尚未添加）
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # 5. 定义分词函数
     def tokenize_function(examples):
         return tokenizer(
             examples["text"],
             truncation=True,
-            # 不用 max_length 固定填充，节省显存
-            # 不用 padding="max_length"，让 collator 动态处理
+            max_length=512,  # 添加最大长度限制以防止内存问题
+            # 不在此处填充，由data_collator处理
         )
 
     # 6. 对三个数据集做token化
     train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
     valid_dataset = valid_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-    test_dataset  = test_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+    test_dataset = test_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
 
-    # 7. 定义 collator，自动生成 labels 并动态 padding
+    # 7. 定义collator，自动生成labels并动态padding
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
-        mlm=False  # 自回归语言模型，不是MLM
+        mlm=False,  # 自回归语言模型，不是MLM
+        pad_to_multiple_of=8  # 填充到8的倍数，有助于某些硬件加速
     )
 
     return train_dataset, valid_dataset, test_dataset, data_collator
 
 
 if __name__ == "__main__":
+    import torch
+
+    print("CUDA:", torch.version.cuda)
+    print("Torch:", torch.__version__)
+    print("Device count:", torch.cuda.device_count())
+    print("Device name:", torch.cuda.get_device_name(0))
+
+    capability = torch.cuda.get_device_capability(0)
+    print("Compute Capability:", capability)
+
     params = load_config("./params.xml")
     # a, b = load_my_dataset("D:/Users/xiangyu")
     print(params)

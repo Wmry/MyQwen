@@ -11,6 +11,9 @@ from My_Unit import load_config, load_base_model, smart_to_dtype_and_device, loa
 import math
 import matplotlib.pyplot as plt
 from peft import LoraConfig, get_peft_model, TaskType
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 # 配置日志
 logging.basicConfig(
@@ -127,8 +130,12 @@ if __name__ == "__main__":
     train_dataset, valid_dataset, test_dataset, data_collator = load_my_dataset_hugging_face_method(
         txt_path=train_path,
         txt_name=train_txtfile,
-        tokenizer=tokenizer
+        tokenizer=tokenizer,
+        target_multiple=1024
     )
+
+    train_length = len(train_dataset)
+    train_batch_size = 16
 
     # =========================
     # 应用 LoRA
@@ -144,20 +151,35 @@ if __name__ == "__main__":
     # 训练参数
     # =========================
     training_args = TrainingArguments(
-        output_dir="./results",
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        save_total_limit=2,
-        load_best_model_at_end=True,
-        metric_for_best_model="perplexity",
+        output_dir="./output",  # 输出目录
+        overwrite_output_dir=True,  # 覆盖旧输出
+        num_train_epochs=3,  # 训练 epoch
+        per_device_train_batch_size=8,  # 训练 batch（可适当调大，看显存）
+        per_device_eval_batch_size=1,  # 验证 batch，小一点避免 OOM
+        gradient_accumulation_steps=4,  # 累积梯度，相当于扩大 batch
+
+        fp16=False,  # 不用 fp16
+        bf16=True,  # 用 bf16（A100/8.9 支持，数值更稳定）
+        gradient_checkpointing=True,  # 启用梯度检查点，省显存
+
+        evaluation_strategy="steps",  # 按 step 验证
+        eval_steps=256,  # 验证间隔
+        save_steps=512,  # 保存间隔（必须是 eval_steps 的倍数）
+        load_best_model_at_end=True,  # 保存最优模型
+        metric_for_best_model="loss",  # 以 loss 作为最优标准
         greater_is_better=False,
-        per_device_train_batch_size=5,
-        per_device_eval_batch_size=5,
-        num_train_epochs=3,
-        logging_dir=model_train_log,
-        logging_strategy="epoch",
-        report_to="none",
-        gradient_checkpointing=True,  # 显存大幅下降
+
+        save_total_limit=2,  # 最多保留 2 个 checkpoint
+
+        logging_dir="./logs",  # 日志
+        logging_steps=50,  # 每 50 步记录一次
+
+        # 🔑 避免 eval logits 堆积爆显存
+        eval_accumulation_steps=32,  # 每 32 个 batch 把 logits 搬到 CPU
+        include_inputs_for_metrics=False,  # 不保存输入到 metrics
+        remove_unused_columns=False,  # 减少数据集多余拷贝
+        dataloader_num_workers=2,  # 多线程数据加载
+        dataloader_pin_memory=True,  # 固定内存加速
     )
 
     # =========================

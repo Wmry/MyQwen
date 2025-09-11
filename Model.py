@@ -477,9 +477,19 @@ class KGEmbedding(nn.Module):
         self.W_v = nn.Linear(channels, channels)
         self.update = nn.Linear(channels, channels)
         # self.R_i = torch.arange(node_num, dtype=torch.int)  # 映射不同节点关系索引
+        # 初始化参数
+        self._init_weights()
 
-    def init_params(self):
-        rest_parameter(self.R_map)
+    def _init_weights(self):
+        # 使用 Xavier 初始化
+        nn.init.xavier_uniform_(self.W_q.weight)
+        nn.init.xavier_uniform_(self.W_k.weight)
+        nn.init.xavier_uniform_(self.W_v.weight)
+        nn.init.xavier_uniform_(self.update.weight)
+        nn.init.zeros_(self.W_q.bias)
+        nn.init.zeros_(self.W_k.bias)
+        nn.init.zeros_(self.W_v.bias)
+        nn.init.zeros_(self.update.bias)
 
     def _encode_relation(self, h_t, attention_mask, embedding: nn.Embedding):
         bsz, node_num, channels = h_t.size()
@@ -510,42 +520,54 @@ class KGEmbedding(nn.Module):
         pass
 
     def aggregate_n(self, h_t, attention_mask, embedding, keepdim=True):
-        #
-        # 直接取 embedding.weight
-        token_embedding = embedding.weight  # [V, d]
+        # 保持输入输出 dtype 一致
+        input_dtype = h_t.dtype
 
-        # batch 有效 token
-        bsz = attention_mask.sum()
-        nodes = token_embedding.size(0)
+        with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
+            # 直接取 embedding.weight
+            token_embedding = embedding.weight  # [V, d]
 
-        # Q/K/V 投影
-        x_target = self.W_k(token_embedding)  # [V, d]
-        x_start = self.W_q(h_t[attention_mask, :])  # [B, d]
-        x_v = self.W_v(token_embedding)
+            # batch 有效 token
+            bsz = attention_mask.sum()
+            nodes = token_embedding.size(0)
 
-        # with torch.cuda.amp.autocast():  # AMP 节省显存
-        score_s2t = torch.matmul(x_start, x_target.transpose(0, 1)) / math.sqrt(self.channels)  # [V, s]
-        target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
+            # 确保使用与输入相同的精度
+            dtype = h_t.dtype
 
-        if self.training:
-            # 构建 mask 随机采样 target，不用全 shuffle
-            mask = torch.stack([
-                torch.randperm(nodes, device=h_t.device)[:nodes // 2]
-                for _ in range(bsz)
-            ])  # [N, K]
-            target.scatter_(1, mask, True)
+            # Q/K/V 投影
+            x_target = self.W_k(token_embedding)  # [V, d]
+            x_start = self.W_q(h_t[attention_mask, :])  # [B, d]
+            x_v = self.W_v(token_embedding)
+
+            # with torch.cuda.amp.autocast():  # AMP 节省显存
+            score_s2t = torch.matmul(x_start, x_target.transpose(0, 1)) / math.sqrt(self.channels)  # [V, s]
+            target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
+
+            if self.training:
+                # 构建 mask 随机采样 target，不用全 shuffle
+                mask = torch.stack([
+                    torch.randperm(nodes, device=h_t.device)[:nodes // 2]
+                    for _ in range(bsz)
+                ])  # [N, K]
+                target.scatter_(1, mask, True)
+            else:
+                target[:] = True
+
             score_s2t = score_s2t.masked_fill(~target, -float('inf'))
 
-        # 采样前k个相邻节点的特征
-        topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
-        target[:] = False
-        target.scatter_(1, topk_idx, True)
-        score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
-        score_s2t = torch.softmax(score_s2t, dim=-1)  # [B, V]
+            # 采样前k个相邻节点的特征
+            topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
+            target[:] = False
+            target.scatter_(1, topk_idx, True)
+            score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
+            score_s2t = torch.softmax(score_s2t, dim=-1)  # [B, V]
 
-        h_hat_t = torch.matmul(score_s2t, x_v)
-        h_t[attention_mask] = h_hat_t
-        return h_t  # [B, V_s, V_t]
+            h_hat_t = torch.matmul(score_s2t, x_v)
+
+        h_t_new = h_t.clone()
+        h_t_new = h_t_new.to(input_dtype)
+        h_t_new[attention_mask] = h_hat_t
+        return h_t_new
 
     def update_n(self, h_t):
         return F.gelu(self.update(h_t))
