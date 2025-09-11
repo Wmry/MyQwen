@@ -12,6 +12,7 @@ import math
 import matplotlib.pyplot as plt
 from peft import LoraConfig, get_peft_model, TaskType
 import os
+import numpy as np
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -101,18 +102,42 @@ def apply_lora(model_tmp: PreTrainedModel):
 # =========================
 # 2. 评价指标（PPL）
 # =========================
+total_loss_accum = 0.0
+total_tokens_accum = 0
+
 def compute_metrics(eval_pred):
+    """
+    按 batch 累积指标，避免一次性保存全量 logits
+    """
+    global total_loss_accum, total_tokens_accum
+
     logits, labels = eval_pred
+
+    # 转 torch
+    if isinstance(logits, np.ndarray):
+        logits = torch.from_numpy(logits)
+    if isinstance(labels, np.ndarray):
+        labels = torch.from_numpy(labels)
+
+    # shift
     shift_logits = logits[..., :-1, :].reshape(-1, logits.shape[-1])
     shift_labels = labels[..., 1:].reshape(-1)
 
-    loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-    loss = loss_fct(
-        torch.tensor(shift_logits, dtype=torch.float32),
-        torch.tensor(shift_labels, dtype=torch.long),
-    )
-    perplexity = math.exp(loss.item())
-    return {"perplexity": perplexity}
+    # mask掉 ignore_index
+    mask = shift_labels != -100
+    masked_logits = shift_logits[mask]
+    masked_labels = shift_labels[mask]
+
+    # batch loss
+    loss_fct = torch.nn.CrossEntropyLoss(reduction='sum')  # sum 而不是 mean
+    batch_loss = loss_fct(masked_logits.to(torch.float32), masked_labels.to(torch.long))
+
+    # 累积
+    total_loss_accum += batch_loss.item()
+    total_tokens_accum += masked_labels.numel()
+
+    # 返回空字典，Trainer 不会存储 logits
+    return {}
 
 
 if __name__ == "__main__":
@@ -131,7 +156,7 @@ if __name__ == "__main__":
         txt_path=train_path,
         txt_name=train_txtfile,
         tokenizer=tokenizer,
-        target_multiple=1024
+        target_multiple=512
     )
 
     train_length = len(train_dataset)
@@ -175,7 +200,7 @@ if __name__ == "__main__":
         logging_steps=50,  # 每 50 步记录一次
 
         # 🔑 避免 eval logits 堆积爆显存
-        eval_accumulation_steps=32,  # 每 32 个 batch 把 logits 搬到 CPU
+        eval_accumulation_steps=None,  # 每 32 个 batch 把 logits 搬到 CPU
         include_inputs_for_metrics=False,  # 不保存输入到 metrics
         remove_unused_columns=False,  # 减少数据集多余拷贝
         dataloader_num_workers=2,  # 多线程数据加载
@@ -200,6 +225,16 @@ if __name__ == "__main__":
     # =========================
     trainer.train()
     trainer.save_model(model_output_path)
+
+    trainer.evaluate()
+
+    # 用累积 loss 计算 perplexity
+    perplexity = math.exp(total_loss_accum / total_tokens_accum)
+    print("Validation Perplexity:", perplexity)
+
+    # 清空累积指标，供下一次验证使用
+    total_loss_accum = 0.0
+    total_tokens_accum = 0
 
     # =========================
     # 绘制曲线

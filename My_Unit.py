@@ -289,7 +289,7 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
     # 首先获取原始大小
     total_size = len(dataset)
     train_size = adjust_to_multiple(total_size * 0.8, target_multiple)
-    valid_test_size = adjust_to_multiple(total_size * 0.02, target_multiple)
+    valid_test_size = adjust_to_multiple(total_size * 0.005, target_multiple)
 
     # 使用select方法选择指定数量的样本
     train_dataset = dataset.select(range(train_size))
@@ -297,7 +297,7 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
 
     # 划分验证集和测试集
     valid_dataset = remaining.select(range(valid_test_size))
-    test_dataset = remaining.select(range(valid_test_size, valid_test_size * 10))
+    test_dataset = remaining.select(range(valid_test_size, valid_test_size * 40))
 
     print(f"数据集大小调整: 总样本 {total_size} -> 训练集 {len(train_dataset)}, "
           f"验证集 {len(valid_dataset)}, 测试集 {len(test_dataset)}")
@@ -323,7 +323,7 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
         return tokenizer(
             examples["text"],
             truncation=True,
-            max_length=512,  # 添加最大长度限制以防止内存问题
+            max_length=128,  # 添加最大长度限制以防止内存问题
             # 不在此处填充，由data_collator处理
         )
 
