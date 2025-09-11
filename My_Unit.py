@@ -57,6 +57,26 @@ def load_config(filename):
         print(f"加载配置出错: {str(e)}请检查params文件是否配置齐全")
         raise
 
+
+def print_trainable_parameters(model: torch.nn.Module):
+    """
+    打印模型中可训练参数的信息
+    """
+    trainable_params = 0
+    all_params = 0
+    for name, param in model.named_parameters():
+        all_params += param.numel()
+        if param.requires_grad:
+            print(f"[Trainable] {name} | shape={tuple(param.shape)} | params={param.numel()}")
+            trainable_params += param.numel()
+
+    print("=" * 80)
+    print(f"Total trainable params: {trainable_params:,}")
+    print(f"Total all params: {all_params:,}")
+    print(f"Trainable %: {100 * trainable_params / all_params:.2f}%")
+    print("=" * 80)
+
+
 def load_base_model(elements):
 
     elements['base_info']['device'] = "cuda" if torch.cuda.is_available() else "cpu"
