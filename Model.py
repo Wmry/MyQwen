@@ -17,9 +17,10 @@ from transformers.utils import add_start_docstrings_to_model_forward
 
 
 class KGQwen2DecoderLayer(Qwen2DecoderLayer):
-    def __init__(self, config: Qwen2Config, layer_idx: int):
+    def __init__(self, config: Qwen2Config, layer_idx: int, embed_tokens):
         super().__init__(config, layer_idx)
         self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.vocab_size)
+        self.embed_tokens = embed_tokens
 
     def forward(
         self,
@@ -29,8 +30,6 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
-        embed_tokens : nn.Embedding = None,
-        inputs_mask : torch.Tensor = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -62,7 +61,7 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
         hidden_states = residual + hidden_states # 短残差链接
         ############################加入知识图谱###########################
 
-        hidden_states = self.encode_relation(hidden_states, inputs_mask, embed_tokens)
+        hidden_states = self.encode_relation(hidden_states, attention_mask, self.embed_tokens)
 
         ############################加入知识图谱###########################
         # Fully Connected
@@ -91,6 +90,9 @@ class KGQwen2Model(Qwen2Model):
 
     def __init__(self, config: Qwen2Config):
         super().__init__(config)
+        self.layers = nn.ModuleList(
+            [Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -209,18 +211,6 @@ class KGQwen2Model(Qwen2Model):
                     past_key_values,
                     output_attentions,
                     use_cache,
-                )
-
-            elif isinstance(decoder_layer, KGQwen2DecoderLayer):
-                layer_outputs = decoder_layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    output_attentions=output_attentions,
-                    use_cache=use_cache,
-                    inputs_mask = inputs_mask,
-                    embed_tokens = self.embed_tokens,
                 )
 
             else:
@@ -463,6 +453,27 @@ def rest_parameter(value):
         value.data.uniform_(-stdv, stdv)
 
 
+def extract_valid_token_mask(attention_mask):
+    """
+    将各种形状的 attention_mask 转换成 (batch, seq_len) 的有效 token mask
+    """
+    if attention_mask.dim() == 2:
+        # (batch, seq_len)
+        return attention_mask.bool()
+
+    elif attention_mask.dim() == 3:
+        # (batch, 1, seq_len) -> squeeze
+        return attention_mask.squeeze(1).bool()
+
+    elif attention_mask.dim() == 4:
+        # (batch, 1, seq_len, seq_len)
+        # 提取对角线，表示 token 自己是否有效
+        return attention_mask[:, 0].diagonal(dim1=-2, dim2=-1).bool()
+
+    else:
+        raise ValueError(f"Unsupported attention_mask shape: {attention_mask.shape}")
+
+
 class KGEmbedding(nn.Module):
     #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
     def __init__(self, channels, hidden_channels, relation_num, node_num):
@@ -498,6 +509,7 @@ class KGEmbedding(nn.Module):
         x_residual = h_t
 
         if attention_mask is not None:
+            attention_mask = extract_valid_token_mask(attention_mask)
             mask = attention_mask.bool()
             h_t = self.aggregate_n(h_t, mask, embedding, True)  # [B, V_s, V_t]
             h_t = x_residual + self.update(h_t)

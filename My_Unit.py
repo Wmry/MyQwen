@@ -14,7 +14,7 @@ params = ['DeepSeek-version', 'DeepSeek-model_path', 'DeepSeek-max_new_tokens',
           'Training-num_epochs', 'Training-max_seq_length', 'Training-gradient_accumulation',
           'Training-warmup_ratio', 'Training-weight_decay', 'Training-lr_scheduler',
           'Training-fp16', 'Training-bf16', 'Training-device','Paths-train_data','Paths-txtfile_name',
-          'Paths-output_dir', 'Paths-logging_dir']
+          'Paths-output_dir', 'Paths-logging_dir', 'Paths-checkpoint_dir']
 
 def get_value(element):
     """根据类型声明解析XML元素值"""
@@ -129,7 +129,7 @@ def replace_model(model, top_config=None, elements=None, current_depth=0):
             setattr(model, name, new_model)
 
 
-def replace_attention_layers(model, top_config=None, elements=None, current_depth=0):
+def replace_attention_layers(model, top_config=None, elements=None, current_depth=0, parent_modle=None):
     """
     递归替换模型中的Qwen2DecoderLayer层，仅替换第一层和中间层
 
@@ -165,6 +165,7 @@ def replace_attention_layers(model, top_config=None, elements=None, current_dept
                 # 创建知识增强版解码器层，使用顶层config
                 new_layer = KGQwen2DecoderLayer(
                     top_config,  # 使用顶层config而不是当前模块的config
+                    embed_tokens=parent_modle.embed_tokens,  # 共享顶层的embedding
                     layer_idx=layer_idx
                 ).to(device=elements['device'], dtype=top_config.torch_dtype)
 
@@ -183,7 +184,7 @@ def replace_attention_layers(model, top_config=None, elements=None, current_dept
                 setattr(model, name, new_layer)
         else:
             # 递归处理子模块，传递顶层config
-            replace_attention_layers(module, top_config, elements, current_depth + 1)
+            replace_attention_layers(module, top_config, elements, current_depth + 1, model)
 
 # 针对 inputs 做智能处理：input_ids 保持 long，其它可以变 dtype
 def smart_to_dtype_and_device(inputs, model_dtype, device):
@@ -289,7 +290,7 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
     # 首先获取原始大小
     total_size = len(dataset)
     train_size = adjust_to_multiple(total_size * 0.8, target_multiple)
-    valid_test_size = adjust_to_multiple(total_size * 0.005, target_multiple)
+    valid_test_size = adjust_to_multiple(total_size * 0.0025, target_multiple)
 
     # 使用select方法选择指定数量的样本
     train_dataset = dataset.select(range(train_size))
@@ -297,7 +298,7 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
 
     # 划分验证集和测试集
     valid_dataset = remaining.select(range(valid_test_size))
-    test_dataset = remaining.select(range(valid_test_size, valid_test_size * 40))
+    test_dataset = remaining.select(range(valid_test_size, valid_test_size * 80))
 
     print(f"数据集大小调整: 总样本 {total_size} -> 训练集 {len(train_dataset)}, "
           f"验证集 {len(valid_dataset)}, 测试集 {len(test_dataset)}")

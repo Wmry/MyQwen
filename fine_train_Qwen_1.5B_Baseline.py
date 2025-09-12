@@ -10,11 +10,16 @@ from My_Unit import load_config, load_base_model, smart_to_dtype_and_device, loa
     load_my_dataset_hugging_face_method, print_trainable_parameters
 import math
 import matplotlib.pyplot as plt
-from peft import LoraConfig, get_peft_model, TaskType
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel, PeftConfig
 import os
 import numpy as np
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# =========================
+# 2. 评价指标（PPL）
+# =========================
+total_loss_accum = 0.0
+total_tokens_accum = 0
 
 # 配置日志
 logging.basicConfig(
@@ -65,16 +70,6 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
     #     # opt.step()
     pass
 
-
-def run(model, dataloader, tokenizer):
-    opt = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
-    model.train()
-    for data in dataloader:
-        data = prepare_inputs(data, model)
-        input_ids = data['input_ids']
-        outputs = model(input_ids=input_ids, attention_mask=data['attention_mask'], tokenizer=tokenizer)
-
-
 def apply_lora(model_tmp: PreTrainedModel):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -92,18 +87,13 @@ def apply_lora(model_tmp: PreTrainedModel):
             "lm_head"
         ],
         # 指定需要训练的基础模型层
-        modules_to_save=["lm_head"]  # 确保lm_head参数被训练
+        # modules_to_save=["lm_head"]  # 确保lm_head参数被训练
+        modules_to_save=[]
     )
+
     model_tmp = get_peft_model(model_tmp, lora_config)
     model_tmp.print_trainable_parameters()
     return model_tmp
-
-
-# =========================
-# 2. 评价指标（PPL）
-# =========================
-total_loss_accum = 0.0
-total_tokens_accum = 0
 
 def compute_metrics(eval_pred):
     """
@@ -139,24 +129,25 @@ def compute_metrics(eval_pred):
     # 返回空字典，Trainer 不会存储 logits
     return {}
 
-
-if __name__ == "__main__":
+def run(total_loss_accum, total_tokens_accum):
     # =========================
     # 加载模型与数据
     # =========================
     params = load_config("./params.xml")
     tokenizer, model = load_model(params)
 
+
     train_path = params['path_set']['train_data']
     train_txtfile = params['path_set']['txtfile_name']
     model_output_path = params['path_set']['output_dir']
     model_train_log = params['path_set']['logging_dir']
+    checkpoint_dir = params['path_set']['checkpoint_dir']
 
     train_dataset, valid_dataset, test_dataset, data_collator = load_my_dataset_hugging_face_method(
         txt_path=train_path,
         txt_name=train_txtfile,
         tokenizer=tokenizer,
-        target_multiple=512
+        target_multiple=256
     )
 
     train_length = len(train_dataset)
@@ -166,6 +157,7 @@ if __name__ == "__main__":
     # 应用 LoRA
     # =========================
     model = apply_lora(model)
+    model.config.use_cache = False
     print_trainable_parameters(model)
     # =========================
     # 开启 Gradient Checkpointing
@@ -176,7 +168,8 @@ if __name__ == "__main__":
     # 训练参数
     # =========================
     training_args = TrainingArguments(
-        output_dir="./output",  # 输出目录
+        output_dir=checkpoint_dir,  # 输出目录
+        save_only_model=True,
         overwrite_output_dir=True,  # 覆盖旧输出
         num_train_epochs=3,  # 训练 epoch
         per_device_train_batch_size=8,  # 训练 batch（可适当调大，看显存）
@@ -186,21 +179,20 @@ if __name__ == "__main__":
         fp16=False,  # 不用 fp16
         bf16=True,  # 用 bf16（A100/8.9 支持，数值更稳定）
         gradient_checkpointing=True,  # 启用梯度检查点，省显存
-
-        evaluation_strategy="steps",  # 按 step 验证
-        eval_steps=256,  # 验证间隔
-        save_steps=512,  # 保存间隔（必须是 eval_steps 的倍数）
+        eval_strategy="steps",  # 按 step 验证
+        eval_steps=512,  # 验证间隔
+        save_steps=1024,  # 保存间隔（必须是 eval_steps 的倍数）
         load_best_model_at_end=True,  # 保存最优模型
         metric_for_best_model="loss",  # 以 loss 作为最优标准
         greater_is_better=False,
 
         save_total_limit=2,  # 最多保留 2 个 checkpoint
 
-        logging_dir="./logs",  # 日志
-        logging_steps=50,  # 每 50 步记录一次
+        logging_dir=model_train_log,  # 日志
+        logging_steps=128,  # 每 50 步记录一次
 
         # 🔑 避免 eval logits 堆积爆显存
-        eval_accumulation_steps=None,  # 每 32 个 batch 把 logits 搬到 CPU
+        eval_accumulation_steps=64,  # 每 32 个 batch 把 logits 搬到 CPU
         include_inputs_for_metrics=False,  # 不保存输入到 metrics
         remove_unused_columns=False,  # 减少数据集多余拷贝
         dataloader_num_workers=2,  # 多线程数据加载
@@ -227,14 +219,9 @@ if __name__ == "__main__":
     trainer.save_model(model_output_path)
 
     trainer.evaluate()
-
     # 用累积 loss 计算 perplexity
     perplexity = math.exp(total_loss_accum / total_tokens_accum)
     print("Validation Perplexity:", perplexity)
-
-    # 清空累积指标，供下一次验证使用
-    total_loss_accum = 0.0
-    total_tokens_accum = 0
 
     # =========================
     # 绘制曲线
@@ -259,3 +246,39 @@ if __name__ == "__main__":
     plt.grid()
     plt.title("Training & Evaluation Curve")
     plt.show()
+
+def valid():
+    # =========================
+    # 加载模型与数据
+    # =========================
+    params = load_config("./params.xml")
+    tokenizer, model_tmp = load_model(params)
+    train_path = params['path_set']['train_data']
+    train_txtfile = params['path_set']['txtfile_name']
+    model_output_path = params['path_set']['output_dir']
+    model_train_log = params['path_set']['logging_dir']
+    checkpoint_dir = params['path_set']['checkpoint_dir']
+    device = params['base_info']['device']
+    model_tmp = PeftModel.from_pretrained(model_tmp, model_output_path)
+
+    # 5. 切换到适配器模式（如果需要使用多个适配器）
+    model_tmp.set_adapter("default")  # 使用默认适配器
+
+    model_tmp.eval()
+    text = "请您介绍一下韩立"
+    inputs = tokenizer(text, return_tensors="pt").to(device)
+
+    with torch.no_grad():
+        generated_ids = model_tmp.generate(**inputs, max_new_tokens=5000, pad_token_id=tokenizer.eos_token_id)
+    # 解码生成的token（跳过特殊令牌）
+    generated_text = tokenizer.decode(generated_ids.squeeze(), skip_special_tokens=True)
+
+    print("生成结果:", generated_text)
+    # 现在模型已准备好使用
+    print("模型加载完成！")
+
+if __name__ == "__main__":
+
+    run(total_loss_accum, total_tokens_accum)
+    # valid(model, model_output_path, device)
+
