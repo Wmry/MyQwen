@@ -490,6 +490,7 @@ class KGEmbedding(nn.Module):
         # self.R_i = torch.arange(node_num, dtype=torch.int)  # 映射不同节点关系索引
         # 初始化参数
         self._init_weights()
+        self.alpha = 0.2
 
     def _init_weights(self):
         # 使用 Xavier 初始化
@@ -512,7 +513,7 @@ class KGEmbedding(nn.Module):
             attention_mask = extract_valid_token_mask(attention_mask)
             mask = attention_mask.bool()
             h_t = self.aggregate_n(h_t, mask, embedding, True)  # [B, V_s, V_t]
-            h_t = x_residual + self.update(h_t)
+            h_t = (1-self.alpha) * x_residual + self.alpha * self.update(h_t)
 
         else:
             throw_error("attention mask is required.")

@@ -87,8 +87,8 @@ def apply_lora(model_tmp: PreTrainedModel):
             "lm_head"
         ],
         # 指定需要训练的基础模型层
-        # modules_to_save=["lm_head"]  # 确保lm_head参数被训练
-        modules_to_save=[]
+        modules_to_save=["lm_head"]  # 确保lm_head参数被训练
+        # modules_to_save=[]
     )
 
     model_tmp = get_peft_model(model_tmp, lora_config)
@@ -168,10 +168,11 @@ def run(total_loss_accum, total_tokens_accum):
     # 训练参数
     # =========================
     training_args = TrainingArguments(
+        learning_rate= 2.0e-5,
         output_dir=checkpoint_dir,  # 输出目录
         save_only_model=True,
         overwrite_output_dir=True,  # 覆盖旧输出
-        num_train_epochs=3,  # 训练 epoch
+        num_train_epochs=2,  # 训练 epoch
         per_device_train_batch_size=8,  # 训练 batch（可适当调大，看显存）
         per_device_eval_batch_size=1,  # 验证 batch，小一点避免 OOM
         gradient_accumulation_steps=4,  # 累积梯度，相当于扩大 batch
@@ -180,8 +181,8 @@ def run(total_loss_accum, total_tokens_accum):
         bf16=True,  # 用 bf16（A100/8.9 支持，数值更稳定）
         gradient_checkpointing=True,  # 启用梯度检查点，省显存
         eval_strategy="steps",  # 按 step 验证
-        eval_steps=512,  # 验证间隔
-        save_steps=1024,  # 保存间隔（必须是 eval_steps 的倍数）
+        eval_steps=256,  # 验证间隔
+        save_steps=512,  # 保存间隔（必须是 eval_steps 的倍数）
         load_best_model_at_end=True,  # 保存最优模型
         metric_for_best_model="loss",  # 以 loss 作为最优标准
         greater_is_better=False,
@@ -227,25 +228,25 @@ def run(total_loss_accum, total_tokens_accum):
     # 绘制曲线
     # =========================
     logs = trainer.state.log_history
-    epochs, ppl, losses = [], [], []
-
-    for entry in logs:
-        if "epoch" in entry:
-            if "eval_perplexity" in entry:
-                epochs.append(entry["epoch"])
-                ppl.append(entry["eval_perplexity"])
-            if "loss" in entry:
-                losses.append(entry["loss"])
-
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, ppl, marker="o", label="Eval Perplexity")
-    plt.plot(range(len(losses)), losses, linestyle="--", label="Train Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Value")
-    plt.legend()
-    plt.grid()
-    plt.title("Training & Evaluation Curve")
-    plt.show()
+    # epochs, ppl, losses = [], [], []
+    #
+    # for entry in logs:
+    #     if "epoch" in entry:
+    #         if "eval_perplexity" in entry:
+    #             epochs.append(entry["epoch"])
+    #             ppl.append(entry["eval_perplexity"])
+    #         if "loss" in entry:
+    #             losses.append(entry["loss"])
+    #
+    # plt.figure(figsize=(8, 5))
+    # plt.plot(epochs, ppl, marker="o", label="Eval Perplexity")
+    # plt.plot(range(len(losses)), losses, linestyle="--", label="Train Loss")
+    # plt.xlabel("Epoch")
+    # plt.ylabel("Value")
+    # plt.legend()
+    # plt.grid()
+    # plt.title("Training & Evaluation Curve")
+    # plt.show()
 
 def valid():
     # =========================
@@ -279,6 +280,6 @@ def valid():
 
 if __name__ == "__main__":
 
-    run(total_loss_accum, total_tokens_accum)
-    # valid(model, model_output_path, device)
+    # run(total_loss_accum, total_tokens_accum)
+    valid()
 
