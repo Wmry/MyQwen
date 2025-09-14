@@ -1,6 +1,4 @@
 # DeepSeek结构学习
-一箱古井酒、两条中华烟
-
 <font color=red>红色表示暂定需要确定的</font>
 
 <font color=blue>蓝色表示可暂定确定的</font>
@@ -62,7 +60,7 @@ pip install evaluate # 使用hugging face的评价指标库 evaluate
 使用GNN构建知识图谱并更新大模型知识，Understand_step_1:使用$V \in $
 
 ######  构建知识图谱 ( 如何构建上下文异构图 ) 
-<font color=blue size=3>设计思路1、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系生成隐向量汇聚的节点为embed_tokens中获取的隐状态，边通过余弦相关性计算</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>
+<font color=blue size=3>设计思路1、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系生成隐向量汇聚的节点为embed_tokens中获取的隐状态，边通过余弦相关性计算，通过Droput和TopK(4096)训练节点，学习语料中的相关性</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>
 $$
 通过构建可学习的语料关系编码器，存储语料中不同Token之间的关系（类似于连续上下文），最终构建一个W\in R^{N\times N \times R}\\
 同时通过W_{k}^{C\times C},W_{q}^{C \times C}，W_{ATT}^{C\times C}辅助映射三元组\\
@@ -80,6 +78,8 @@ $$
 ![sctter_add操作示意图](C:\Users\LZF\Desktop\sctter_add操作示意图.jpg)
 
 <font color=blue size=3>设计思路2、**在经过LM形成最终隐向量后**，通过设计编码器（隐状态+激活函数（GELU）+线性层）构建隐向量通过内积计算相似度，代表不同节点之间的关系，不再明确存储节点之间的关系</font><font color=red size=2>（在每层Attention生成语句后进行融合）。</font>
+
+<font color=red size=3>实验记录（2-25-09-15）、**TopK 256训练效果太差**，需验证是训练参数有问题、还是模型具体实现有问题</font><font color=blue size=2>（需查看论文分析，为何验证时准确率为0）。</font>
 
 ```python
 class Qwen2ForCausalLM(Qwen2PreTrainedModel):

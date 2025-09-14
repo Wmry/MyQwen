@@ -478,7 +478,7 @@ class KGEmbedding(nn.Module):
     #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
     def __init__(self, channels, hidden_channels, relation_num, node_num):
         super(KGEmbedding, self).__init__()
-        self.k = 256
+        self.k = 4096
         self.channels = channels
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
@@ -554,26 +554,16 @@ class KGEmbedding(nn.Module):
 
             # with torch.cuda.amp.autocast():  # AMP 节省显存
             score_s2t = torch.matmul(x_start, x_target.transpose(0, 1)) / math.sqrt(self.channels)  # [V, s]
+
             target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
 
-            if self.training:
-                # 构建 mask 随机采样 target，不用全 shuffle
-                mask = torch.stack([
-                    torch.randperm(nodes, device=h_t.device)[:nodes // 2]
-                    for _ in range(bsz)
-                ])  # [N, K]
-                target.scatter_(1, mask, True)
-            else:
-                target[:] = True
-
-            score_s2t = score_s2t.masked_fill(~target, -float('inf'))
-
-            # 采样前k个相邻节点的特征
+            # 使用dropout代替随机采样
+            score_s2t = torch.softmax(score_s2t, dim=-1, dtype=torch.float32).to(input_dtype)
+            score_s2t = F.dropout(score_s2t, p=0.5, training=self.training)
             topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
             target[:] = False
             target.scatter_(1, topk_idx, True)
-            score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
-            score_s2t = torch.softmax(score_s2t, dim=-1)  # [B, V]
+            score_s2t = score_s2t.masked_fill(~target, float(0.0))  # 只保留mask的元素
 
             h_hat_t = torch.matmul(score_s2t, x_v)
 

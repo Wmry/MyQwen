@@ -280,6 +280,6 @@ def valid():
 
 if __name__ == "__main__":
 
-    # run(total_loss_accum, total_tokens_accum)
-    valid()
+    run(total_loss_accum, total_tokens_accum)
+    # valid()
 
