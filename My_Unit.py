@@ -1,10 +1,14 @@
+import re
 import xml.etree.ElementTree as ET
 
 import math
+
+import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
+from matplotlib import pyplot as plt
 from scipy.constants import value
-from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForLanguageModeling
+from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForLanguageModeling, BertTokenizer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Model, Qwen2DecoderLayer
 from Model import KGQwen2Attention, KGQwen2ForCausalLM, KGQwen2Model, KGQwen2DecoderLayer
 
@@ -32,6 +36,8 @@ def get_value(element):
     else:  # str and others
         return text
 def load_config(filename):
+    name_title=''
+    name_value=''
     try:
         tree = ET.parse(filename)
         root = tree.getroot()
@@ -44,6 +50,8 @@ def load_config(filename):
         path_set = {}
         for param in params:
             name_c, name_t = param.split("-")
+            name_title = name_c
+            name_value = name_t
             value = get_value(root.find(name_c).find(name_t))
             if name_c == 'DeepSeek':
                 base_info[name_t] = value
@@ -56,7 +64,7 @@ def load_config(filename):
         return {"base_info":base_info, "lora_set":lora_set, "train_set":train_set, "path_set":path_set }
 
     except Exception as e:
-        print(f"加载配置出错: {str(e)}请检查params文件是否配置齐全")
+        print(f"加载配置出错: {str(e)}请检查params文件是否配置{ name_title }参数")
         raise
 
 
@@ -259,7 +267,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 
 
-def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokenizer=None, target_multiple=32):
+def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokenizer=None, target_multiple=512):
     """
     加载并预处理文本数据集，确保数据集大小是target_multiple的倍数
 
@@ -276,12 +284,38 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
         encoding="GB18030"
     )
 
+    def clean_text(example):
+        text = example["text"]
+        text = re.sub(r'[\r\n\t\f\v\u2028\u2029\u0085]+', ' ', text)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = re.sub(r"http\S+|www\S+", "", text)
+        text = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", text)
+        text = text.replace("\u3000", " ")
+        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9，。？！：；、“”‘'’…\s]", "", text)
+        sentences = re.split(r'([。！？])', text)
+        merged_sentences = []
+        for i in range(0, len(sentences) - 1, 2):
+            sentence = sentences[i].strip()
+            punct = sentences[i + 1].strip()
+            if sentence:
+                merged_sentences.append(sentence + punct)
+        if len(sentences) % 2 != 0 and sentences[-1].strip():
+            merged_sentences.append(sentences[-1].strip())
+        final_text = " ".join(merged_sentences)
+        final_text = re.sub(r'[\r\n]+', ' ', final_text)
+        final_text = re.sub(r'\s+', ' ', final_text).strip()
+        return {"text": final_text}
+
+    # 3. 清洗并过滤短文本
+    dataset = dataset["raw"].map(clean_text)
+
     # 2. 过滤空行和无效行
     def filter_empty_lines(example):
         stripped = example["text"].strip()
         return stripped != "" and not stripped.isspace() and len(stripped) > 1
 
-    dataset = dataset["raw"].filter(filter_empty_lines)
+    dataset = dataset.filter(filter_empty_lines)
 
     # 计算调整后的数据集大小
     def adjust_to_multiple(size, multiple):
@@ -291,8 +325,8 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
     # 3. 划分训练/验证/测试集 (80% train, 10% valid, 10% test)
     # 首先获取原始大小
     total_size = len(dataset)
-    train_size = adjust_to_multiple(total_size * 0.8, target_multiple)
-    valid_test_size = adjust_to_multiple(total_size * 0.0025, target_multiple)
+    train_size = adjust_to_multiple(total_size * 0.998, target_multiple)
+    valid_test_size = adjust_to_multiple(total_size * 0.002, target_multiple)
 
     # 使用select方法选择指定数量的样本
     train_dataset = dataset.select(range(train_size))
@@ -300,15 +334,13 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
 
     # 划分验证集和测试集
     valid_dataset = remaining.select(range(valid_test_size))
-    test_dataset = remaining.select(range(valid_test_size, valid_test_size * 80))
 
     print(f"数据集大小调整: 总样本 {total_size} -> 训练集 {len(train_dataset)}, "
-          f"验证集 {len(valid_dataset)}, 测试集 {len(test_dataset)}")
+          f"验证集 {len(valid_dataset)}")
 
     # 确保所有数据集大小都是target_multiple的倍数
     assert len(train_dataset) % target_multiple == 0, "训练集大小不是目标倍数"
     assert len(valid_dataset) % target_multiple == 0, "验证集大小不是目标倍数"
-    assert len(test_dataset) % target_multiple == 0, "测试集大小不是目标倍数"
 
     # 4. 初始化分词器
     if tokenizer is None:
@@ -333,7 +365,6 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
     # 6. 对三个数据集做token化
     train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
     valid_dataset = valid_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-    test_dataset = test_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
 
     # 7. 定义collator，自动生成labels并动态padding
     data_collator = DataCollatorForLanguageModeling(
@@ -342,7 +373,13 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
         pad_to_multiple_of=8  # 填充到8的倍数，有助于某些硬件加速
     )
 
-    return train_dataset, valid_dataset, test_dataset, data_collator
+    # 5. 对拼接后的文本进行统计
+    token_lens = [len(t["input_ids"]) for t in train_dataset]
+
+    print("===== 拼接后语料统计信息 =====")
+    print(f"样本总数: {len(train_dataset)}")
+    print(f"token 长度: 平均={np.mean(token_lens):.2f}, 最大={np.max(token_lens)}, 中位数={np.median(token_lens)}")
+    return train_dataset, valid_dataset, data_collator
 
 
 if __name__ == "__main__":
@@ -357,5 +394,7 @@ if __name__ == "__main__":
     print("Compute Capability:", capability)
 
     params = load_config("./params.xml")
+    tokenizer_path = params['base_info']['model_path']
+    train_path = params['path_set']['train_data']
     # a, b = load_my_dataset("D:/Users/xiangyu")
     print(params)

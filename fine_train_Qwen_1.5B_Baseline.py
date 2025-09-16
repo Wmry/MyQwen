@@ -75,7 +75,17 @@ def apply_lora(model_tmp: PreTrainedModel):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=8,
-        lora_alpha=32,
+        rank_pattern={
+            "encode_relation": 16,
+            "KGQwen2Model.W_q": 16,
+            "KGQwen2Model.W_k": 16,
+        },
+        alpha_pattern={
+            "encode_relation": 64,
+            "KGQwen2Model.W_q": 64,
+            "KGQwen2Model.W_k": 64,
+        },
+        lora_alpha=16,
         lora_dropout=0.1,
         target_modules=[
             # KGQwen2DecoderLayer中的encode_relation相关参数
@@ -130,8 +140,9 @@ def compute_metrics(eval_pred):
     total_loss_accum += batch_loss.item()
     total_tokens_accum += masked_labels.numel()
 
-    # 返回空字典，Trainer 不会存储 logits
-    return {}
+    perplexity = math.exp(batch_loss.item() / masked_labels.numel())
+
+    return {"perplexity": perplexity}
 
 
 def run(total_loss_accum, total_tokens_accum):
@@ -148,7 +159,7 @@ def run(total_loss_accum, total_tokens_accum):
     model_train_log = params['path_set']['logging_dir']
     checkpoint_dir = params['path_set']['checkpoint_dir']
 
-    train_dataset, valid_dataset, test_dataset, data_collator = load_my_dataset_hugging_face_method(
+    train_dataset, valid_dataset, data_collator = load_my_dataset_hugging_face_method(
         txt_path=train_path,
         txt_name=train_txtfile,
         tokenizer=tokenizer,
@@ -178,7 +189,7 @@ def run(total_loss_accum, total_tokens_accum):
         save_only_model=True,
         overwrite_output_dir=True,  # 覆盖旧输出
         num_train_epochs=2,  # 训练 epoch
-        per_device_train_batch_size=8,  # 训练 batch（可适当调大，看显存）
+        per_device_train_batch_size=16,  # 训练 batch（可适当调大，看显存）
         per_device_eval_batch_size=1,  # 验证 batch，小一点避免 OOM
         gradient_accumulation_steps=4,  # 累积梯度，相当于扩大 batch
 
@@ -186,8 +197,8 @@ def run(total_loss_accum, total_tokens_accum):
         bf16=True,  # 用 bf16（A100/8.9 支持，数值更稳定）
         gradient_checkpointing=True,  # 启用梯度检查点，省显存
         eval_strategy="steps",  # 按 step 验证
-        eval_steps=256,  # 验证间隔
-        save_steps=512,  # 保存间隔（必须是 eval_steps 的倍数）
+        eval_steps=128,  # 验证间隔
+        save_steps=256,  # 保存间隔（必须是 eval_steps 的倍数）
         load_best_model_at_end=True,  # 保存最优模型
         metric_for_best_model="loss",  # 以 loss 作为最优标准
         greater_is_better=False,
@@ -195,7 +206,7 @@ def run(total_loss_accum, total_tokens_accum):
         save_total_limit=2,  # 最多保留 2 个 checkpoint
 
         logging_dir=model_train_log,  # 日志
-        logging_steps=128,  # 每 50 步记录一次
+        logging_steps=64,  # 每 50 步记录一次
 
         # 🔑 避免 eval logits 堆积爆显存
         eval_accumulation_steps=64,  # 每 32 个 batch 把 logits 搬到 CPU

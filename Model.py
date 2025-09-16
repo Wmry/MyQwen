@@ -58,12 +58,13 @@ class KGQwen2DecoderLayer(Qwen2DecoderLayer):
             output_attentions=output_attentions,
             use_cache=use_cache,
         )
-        hidden_states = residual + hidden_states # 短残差链接
         ############################加入知识图谱###########################
 
         hidden_states = self.encode_relation(hidden_states, attention_mask, self.embed_tokens)
 
         ############################加入知识图谱###########################
+
+        hidden_states = residual + hidden_states # 短残差链接
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
@@ -515,7 +516,7 @@ class KGEmbedding(nn.Module):
             attention_mask = extract_valid_token_mask(attention_mask)
             mask = attention_mask.bool()
             h_t = self.aggregate_n(h_t, mask, embedding, True)  # [B, V_s, V_t]
-            h_t = (1-self.alpha) * x_residual + self.alpha * self.update(h_t)
+            h_t = x_residual + self.update(h_t)
 
         else:
             throw_error("attention mask is required.")
