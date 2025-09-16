@@ -17,9 +17,9 @@ from transformers.utils import add_start_docstrings_to_model_forward
 
 
 class KGQwen2DecoderLayer(Qwen2DecoderLayer):
-    def __init__(self, config: Qwen2Config, layer_idx: int, embed_tokens):
+    def __init__(self, config: Qwen2Config, layer_idx: int, embed_tokens, weight_k, weight_q):
         super().__init__(config, layer_idx)
-        self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.vocab_size)
+        self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.vocab_size, weight_q, weight_k)
         self.embed_tokens = embed_tokens
 
     def forward(
@@ -90,9 +90,13 @@ class KGQwen2Model(Qwen2Model):
 
     def __init__(self, config: Qwen2Config):
         super().__init__(config)
-        self.layers = nn.ModuleList(
-            [Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
-        )
+        self.W_k = nn.Linear(config.hidden_size, config.hidden_size)
+        self.W_q = nn.Linear(config.hidden_size, config.hidden_size)
+        # 初始化参数
+        nn.init.xavier_uniform_(self.W_k.weight)
+        nn.init.xavier_uniform_(self.W_q.weight)
+        nn.init.zeros_(self.W_k.bias)
+        nn.init.zeros_(self.W_q.bias)
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -250,6 +254,7 @@ class KGQwen2Model(Qwen2Model):
             attentions=all_self_attns,
         )
 
+
 class KGQwen2Attention(Qwen2Attention):
     def __init__(self, config: Qwen2Config, layer_idx: Optional[int] = None, relation_model: nn.Module = None):
         super().__init__(config, layer_idx)
@@ -344,6 +349,7 @@ class KGQwen2Attention(Qwen2Attention):
             attn_weights = None
 
         return attn_output, attn_weights, past_key_value
+
 
 class KGQwen2ForCausalLM(Qwen2ForCausalLM):
     def __init__(self, config):
@@ -476,15 +482,15 @@ def extract_valid_token_mask(attention_mask):
 
 class KGEmbedding(nn.Module):
     #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
-    def __init__(self, channels, hidden_channels, relation_num, node_num):
+    def __init__(self, channels, hidden_channels, relation_num, node_num, weight_q, weight_k):
         super(KGEmbedding, self).__init__()
         self.k = 4096
         self.channels = channels
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
         # 通过W_q、W_k去计算X_i与X_j之间的相关性而不是显示存储在R_map中
-        self.W_q = nn.Linear(channels, channels)
-        self.W_k = nn.Linear(channels, channels)
+        self.W_q = weight_q
+        self.W_k = weight_k
         self.W_v = nn.Linear(channels, channels)
         self.update = nn.Linear(channels, channels)
         # self.R_i = torch.arange(node_num, dtype=torch.int)  # 映射不同节点关系索引
@@ -494,12 +500,8 @@ class KGEmbedding(nn.Module):
 
     def _init_weights(self):
         # 使用 Xavier 初始化
-        nn.init.xavier_uniform_(self.W_q.weight)
-        nn.init.xavier_uniform_(self.W_k.weight)
         nn.init.xavier_uniform_(self.W_v.weight)
         nn.init.xavier_uniform_(self.update.weight)
-        nn.init.zeros_(self.W_q.bias)
-        nn.init.zeros_(self.W_k.bias)
         nn.init.zeros_(self.W_v.bias)
         nn.init.zeros_(self.update.bias)
 

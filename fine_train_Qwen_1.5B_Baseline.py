@@ -70,6 +70,7 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
     #     # opt.step()
     pass
 
+
 def apply_lora(model_tmp: PreTrainedModel):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -82,6 +83,8 @@ def apply_lora(model_tmp: PreTrainedModel):
             "encode_relation.W_k",
             "encode_relation.W_v",
             "encode_relation.update",
+            "KGQwen2Model.W_q",
+            "KGQwen2Model.W_k",
 
             # lm_head参数
             "lm_head"
@@ -94,6 +97,7 @@ def apply_lora(model_tmp: PreTrainedModel):
     model_tmp = get_peft_model(model_tmp, lora_config)
     model_tmp.print_trainable_parameters()
     return model_tmp
+
 
 def compute_metrics(eval_pred):
     """
@@ -128,6 +132,7 @@ def compute_metrics(eval_pred):
 
     # 返回空字典，Trainer 不会存储 logits
     return {}
+
 
 def run(total_loss_accum, total_tokens_accum):
     # =========================
@@ -247,6 +252,7 @@ def run(total_loss_accum, total_tokens_accum):
     # plt.grid()
     # plt.title("Training & Evaluation Curve")
     # plt.show()
+
 
 def valid():
     # =========================
