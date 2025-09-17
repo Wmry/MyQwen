@@ -82,6 +82,7 @@ def apply_lora(model_tmp: PreTrainedModel):
             "encode_relation.update":16,
             "KGQwen2Model.W_q": 16,
             "KGQwen2Model.W_k": 16,
+            "lm_head": 1,
         },
         alpha_pattern={
             "encode_relation.W_q":64,
@@ -90,6 +91,7 @@ def apply_lora(model_tmp: PreTrainedModel):
             "encode_relation.update":64,
             "KGQwen2Model.W_q": 64,
             "KGQwen2Model.W_k": 64,
+            "lm_head": 1,
         },
         lora_alpha=16,
         lora_dropout=0.1,
