@@ -91,7 +91,7 @@ def apply_lora(model_tmp: PreTrainedModel):
             "KGQwen2Model.W_q": 64,
             "KGQwen2Model.W_k": 64,
         },
-        lora_alpha=32,
+        lora_alpha=16,
         lora_dropout=0.1,
         target_modules=[
             # KGQwen2DecoderLayer中的encode_relation相关参数
@@ -190,7 +190,7 @@ def run(total_loss_accum, total_tokens_accum):
     # 训练参数
     # =========================
     training_args = TrainingArguments(
-        learning_rate= 2.0e-5,
+        learning_rate= 2.25e-5,
         output_dir=checkpoint_dir,  # 输出目录
         save_only_model=True,
         overwrite_output_dir=True,  # 覆盖旧输出
@@ -212,10 +212,10 @@ def run(total_loss_accum, total_tokens_accum):
         save_total_limit=2,  # 最多保留 2 个 checkpoint
 
         logging_dir=model_train_log,  # 日志
-        logging_steps=64,  # 每 50 步记录一次
+        logging_steps=64,  # 每 64 步记录一次
 
         # 🔑 避免 eval logits 堆积爆显存
-        eval_accumulation_steps=64,  # 每 32 个 batch 把 logits 搬到 CPU
+        eval_accumulation_steps=64,  # 每 64 个 batch 把 logits 搬到 CPU
         include_inputs_for_metrics=False,  # 不保存输入到 metrics
         remove_unused_columns=False,  # 减少数据集多余拷贝
         dataloader_num_workers=2,  # 多线程数据加载
@@ -289,7 +289,7 @@ def valid():
     model_tmp.set_adapter("default")  # 使用默认适配器
 
     model_tmp.eval()
-    text = "请您介绍一下韩立"
+    text = "请您介绍一下凡人修仙传内容"
     inputs = tokenizer(text, return_tensors="pt", max_length=125, padding=True).to(device)
 
     with torch.no_grad():
