@@ -475,7 +475,7 @@ def extract_valid_token_mask(attention_mask):
     elif attention_mask.dim() == 4:
         # (batch, 1, seq_len, seq_len)
         # 提取对角线，表示 token 自己是否有效
-        return attention_mask[:, 0].diagonal(dim1=-2, dim2=-1).bool()
+        return (attention_mask[:, 0] > -1e4).any(dim=-1).bool()
 
     else:
         raise ValueError(f"Unsupported attention_mask shape: {attention_mask.shape}")
@@ -515,6 +515,7 @@ class KGEmbedding(nn.Module):
         if attention_mask is not None:
             attention_mask = extract_valid_token_mask(attention_mask)
             mask = attention_mask.bool()
+            assert  mask.sum() != 0, "attention_mask掩码为空"
             h_t = self.aggregate_n(h_t, mask, embedding, True)  # [B, V_s, V_t]
             h_t = x_residual + self.update(h_t)
 

@@ -76,16 +76,22 @@ def apply_lora(model_tmp: PreTrainedModel):
         task_type=TaskType.CAUSAL_LM,
         r=8,
         rank_pattern={
-            "encode_relation": 16,
+            "encode_relation.W_q":16,
+            "encode_relation.W_k":16,
+            "encode_relation.W_v":16,
+            "encode_relation.update":16,
             "KGQwen2Model.W_q": 16,
             "KGQwen2Model.W_k": 16,
         },
         alpha_pattern={
-            "encode_relation": 64,
+            "encode_relation.W_q":64,
+            "encode_relation.W_k":64,
+            "encode_relation.W_v":64,
+            "encode_relation.update":64,
             "KGQwen2Model.W_q": 64,
             "KGQwen2Model.W_k": 64,
         },
-        lora_alpha=16,
+        lora_alpha=32,
         lora_dropout=0.1,
         target_modules=[
             # KGQwen2DecoderLayer中的encode_relation相关参数
@@ -284,7 +290,7 @@ def valid():
 
     model_tmp.eval()
     text = "请您介绍一下韩立"
-    inputs = tokenizer(text, return_tensors="pt").to(device)
+    inputs = tokenizer(text, return_tensors="pt", max_length=125, padding=True).to(device)
 
     with torch.no_grad():
         generated_ids = model_tmp.generate(**inputs, max_new_tokens=5000, pad_token_id=tokenizer.eos_token_id)
