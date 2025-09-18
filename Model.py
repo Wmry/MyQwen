@@ -565,7 +565,7 @@ class KGEmbedding(nn.Module):
             # 使用dropout代替随机采样
             score_s2t = torch.softmax(score_s2t, dim=-1, dtype=torch.float32).to(input_dtype)
             score_s2t = score_s2t.reshape(-1, self.num_heads, nodes)
-            score_s2t = F.dropout(score_s2t, p=0.5, training=self.training)
+            score_s2t = F.dropout(score_s2t, p=0.25, training=self.training)
             topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
             target[:] = False
             target.scatter_(2, topk_idx, True)
