@@ -501,7 +501,7 @@ class KGEmbedding(nn.Module):
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
         # 通过W_q、W_k去计算X_i与X_j之间的相关性而不是显示存储在R_map中
-        self.num_heads = num_heads
+        self.num_heads = 2
         self.head_dim = self.hidden_channels // self.num_heads
         self.W_q = weight_q
         self.W_k = weight_k
