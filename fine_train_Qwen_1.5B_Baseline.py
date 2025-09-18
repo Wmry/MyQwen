@@ -291,7 +291,7 @@ def valid():
     model_tmp.set_adapter("default")  # 使用默认适配器
 
     model_tmp.eval()
-    text = "请您介绍一下凡人修仙传内容"
+    text = "请介绍“村里的其他孩子也是“狗娃”“二蛋”之类的被人一直称呼着”的含义"
     inputs = tokenizer(text, return_tensors="pt", max_length=125, padding=True).to(device)
 
     with torch.no_grad():
