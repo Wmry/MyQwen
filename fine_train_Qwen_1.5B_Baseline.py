@@ -2,7 +2,8 @@ import logging
 
 from safetensors.torch import save_model
 from scipy.ndimage import label
-from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, PreTrainedModel
+from torch.optim import AdamW
+from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, PreTrainedModel, get_scheduler
 import torch
 from Model import KGQwen2Attention, KGQwen2DecoderLayer
 import torch.optim as optim
@@ -158,12 +159,33 @@ def run(total_loss_accum, total_tokens_accum):
     params = load_config("./params.xml")
     tokenizer, model = load_model(params)
 
-
     train_path = params['path_set']['train_data']
     train_txtfile = params['path_set']['txtfile_name']
     model_output_path = params['path_set']['output_dir']
     model_train_log = params['path_set']['logging_dir']
     checkpoint_dir = params['path_set']['checkpoint_dir']
+
+    param_optimizer = [
+        {
+            "params": [p for n, p in model.named_parameters()
+                       if "encode_relation" in n and p.requires_grad],
+            "lr": 5e-4,  # encode_relation LoRA 学习率高
+        },
+        {
+            "params": [p for n, p in model.named_parameters()
+                       if "lm_head" in n and p.requires_grad],
+            "lr": 1e-5,  # lm_head LoRA 学习率低
+        }
+    ]
+
+    optimizer = AdamW(param_optimizer, betas=(0.9, 0.999), eps=1e-8)
+
+    scheduler = get_scheduler(
+        "cosine",
+        optimizer=optimizer,
+        num_warmup_steps=32,
+        num_training_steps=4832
+    )
 
     train_dataset, valid_dataset, data_collator = load_my_dataset_hugging_face_method(
         txt_path=train_path,
@@ -190,7 +212,7 @@ def run(total_loss_accum, total_tokens_accum):
     # 训练参数
     # =========================
     training_args = TrainingArguments(
-        learning_rate= 2.05e-5,
+        learning_rate= 2.05e-4,
         output_dir=checkpoint_dir,  # 输出目录
         save_only_model=True,
         overwrite_output_dir=True,  # 覆盖旧输出
@@ -233,6 +255,7 @@ def run(total_loss_accum, total_tokens_accum):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
+        optimizers=(optimizer, scheduler),  # 传入自定义 optimizer
     )
 
     # =========================
