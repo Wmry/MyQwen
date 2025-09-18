@@ -1,7 +1,7 @@
 import torch
 from numpy import dtype
 from numpy.f2py.auxfuncs import throw_error
-from torch import nn
+from torch import nn, Tensor
 import math
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
@@ -11,15 +11,26 @@ from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_m
 from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Attention, logger, Qwen2RotaryEmbedding, \
     apply_rotary_pos_emb, repeat_kv, Cache, Qwen2DecoderLayer, Qwen2Model, QWEN2_INPUTS_DOCSTRING, Qwen2RMSNorm
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Any
 from torch import nn
 from transformers.utils import add_start_docstrings_to_model_forward
+
+
+def glorot(value: Any):
+    if isinstance(value, Tensor):
+        stdv = math.sqrt(6.0 / (value.size(-2) + value.size(-1)))
+        value.data.uniform_(-stdv, stdv)
+    else:
+        for v in value.parameters() if hasattr(value, 'parameters') else []:
+            glorot(v)
+        for v in value.buffers() if hasattr(value, 'buffers') else []:
+            glorot(v)
 
 
 class KGQwen2DecoderLayer(Qwen2DecoderLayer):
     def __init__(self, config: Qwen2Config, layer_idx: int, embed_tokens, weight_k, weight_q):
         super().__init__(config, layer_idx)
-        self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.vocab_size, weight_q, weight_k)
+        self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.vocab_size, weight_q, weight_k, config.num_attention_heads)
         self.embed_tokens = embed_tokens
 
     def forward(
@@ -94,8 +105,8 @@ class KGQwen2Model(Qwen2Model):
         self.W_k = nn.Linear(config.hidden_size, config.hidden_size)
         self.W_q = nn.Linear(config.hidden_size, config.hidden_size)
         # 初始化参数
-        nn.init.xavier_uniform_(self.W_k.weight)
-        nn.init.xavier_uniform_(self.W_q.weight)
+        glorot(self.W_k.weight)
+        glorot(self.W_q.weight)
         nn.init.zeros_(self.W_k.bias)
         nn.init.zeros_(self.W_q.bias)
 
@@ -483,13 +494,15 @@ def extract_valid_token_mask(attention_mask):
 
 class KGEmbedding(nn.Module):
     #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
-    def __init__(self, channels, hidden_channels, relation_num, node_num, weight_q, weight_k):
+    def __init__(self, channels, hidden_channels, relation_num, node_num, weight_q, weight_k, num_heads):
         super(KGEmbedding, self).__init__()
         self.k = 4096
         self.channels = channels
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
         # 通过W_q、W_k去计算X_i与X_j之间的相关性而不是显示存储在R_map中
+        self.num_heads = num_heads
+        self.head_dim = self.hidden_channels // self.num_heads
         self.W_q = weight_q
         self.W_k = weight_k
         self.W_v = nn.Linear(channels, channels)
@@ -515,7 +528,7 @@ class KGEmbedding(nn.Module):
         if attention_mask is not None:
             attention_mask = extract_valid_token_mask(attention_mask)
             mask = attention_mask.bool()
-            assert  mask.sum() != 0, "attention_mask掩码为空"
+            assert mask.sum() != 0, "attention_mask掩码为空"
             h_t = self.aggregate_n(h_t, mask, embedding, True)  # [B, V_s, V_t]
             h_t = x_residual + self.update(h_t)
 
@@ -523,18 +536,6 @@ class KGEmbedding(nn.Module):
             throw_error("attention mask is required.")
 
         return h_t
-        ###### 需要提取出start节点与target节点之间的关系，构建一个index = [[],[]] sec = [[],[]]数组存放关系再构建使用PYG对向量进行汇聚
-        # 可以使用scatter_add进行汇聚操作，才此之间乘以R_map
-        # input_ids = input_ids[attention_mask>0] # 去除填充节点索引
-        # neighbor_ids = self.R_map[input_ids, :, :] # (nodes, :, relation_num=1)
-        #
-        # value, index = torch.sort(neighbor_ids.unsqueeze(-1), dim=-1)
-        #
-        # node_e = embedding(index) # (bsz, :, relation_num, channels)
-        # h_t_e = self.W_q(node_e) # (bsz, :, channels)
-        # h_t_s = self.W_k(h_t) # (bsz, node_num, channels)
-        # attention = (torch.matmul(h_t_s, h_t_e.transpose(2, 3)) * self.R_map[layer_id, :, :]) / math.sqrt(self.channels)
-        pass
 
     def aggregate_n(self, h_t, attention_mask, embedding, keepdim=True):
         # 保持输入输出 dtype 一致
@@ -552,24 +553,26 @@ class KGEmbedding(nn.Module):
             dtype = h_t.dtype
 
             # Q/K/V 投影
-            x_target = self.W_k(token_embedding)  # [V, d]
-            x_start = self.W_q(h_t[attention_mask, :])  # [B, d]
-            x_v = self.W_v(token_embedding)
+            x_target = self.W_k(token_embedding).view(self.num_heads, -1, self.head_dim)  # [V, d]
+            x_start = self.W_q(h_t[attention_mask, :]).view(self.num_heads, -1, self.head_dim)  # [B, d]
+            x_v = self.W_v(token_embedding).view(self.num_heads, -1, self.head_dim)
 
             # with torch.cuda.amp.autocast():  # AMP 节省显存
-            score_s2t = torch.matmul(x_start, x_target.transpose(0, 1)) / math.sqrt(self.channels)  # [V, s]
+            score_s2t = torch.matmul(x_start, x_target.transpose(1, 2)) / math.sqrt(self.head_dim)  # [V, s]
 
-            target = torch.zeros(bsz, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
+            target = torch.zeros(bsz, self.num_heads, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
 
             # 使用dropout代替随机采样
             score_s2t = torch.softmax(score_s2t, dim=-1, dtype=torch.float32).to(input_dtype)
+            score_s2t = score_s2t.reshape(-1, self.num_heads, nodes)
             score_s2t = F.dropout(score_s2t, p=0.5, training=self.training)
             topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
             target[:] = False
-            target.scatter_(1, topk_idx, True)
+            target.scatter_(2, topk_idx, True)
             score_s2t = score_s2t.masked_fill(~target, float(0.0))  # 只保留mask的元素
 
-            h_hat_t = torch.matmul(score_s2t, x_v)
+            h_hat_t = torch.einsum('bhd,hdk->bhk', score_s2t, x_v)
+            h_hat_t = h_hat_t.reshape(-1, self.hidden_channels)
 
         h_t_new = h_t.clone()
         h_t_new = h_t_new.to(input_dtype)
@@ -580,15 +583,6 @@ class KGEmbedding(nn.Module):
         return F.gelu(self.update(h_t))
 
     def _forward(self, query_states, attention_mask, embedding: nn.Embedding):
-        # input_dtype = query_states.dtype
-        # (bsz, n_len, channels) = query_states.shape
-        # x1 = self.encode_relation(torch.cat([query_states, key_states], dim=-1))
-        # x1 = x1.reshape(bsz*self.relation_num, n_len, -1)
-        # # upcast attention to fp32
-        # x1 = x1.to(torch.float32)
-        # x2 = torch.bmm(x1, x1.transpose(1, 2))
-        # relation = x2.reshape(bsz, -1, n_len, n_len)
-        # return relation.to(input_dtype)
         return self._encode_relation(query_states, attention_mask, embedding)
 
     def forward(self, query_states, attention_mask, embedding: nn.Embedding):
