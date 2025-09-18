@@ -74,17 +74,10 @@ def test(data_tmp, tokenizer_tmp, model_tmp, epochs):
 def apply_lora(model_tmp: PreTrainedModel):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
-        r=8,
+        r=1,
+        lora_alpha=1,
+        lora_dropout=0.1,
         rank_pattern={
-            "encode_relation.W_q":16,
-            "encode_relation.W_k":16,
-            "encode_relation.W_v":16,
-            "encode_relation.update":16,
-            "KGQwen2Model.W_q": 16,
-            "KGQwen2Model.W_k": 16,
-            "lm_head": 1,
-        },
-        alpha_pattern={
             "encode_relation.W_q":64,
             "encode_relation.W_k":64,
             "encode_relation.W_v":64,
@@ -93,8 +86,15 @@ def apply_lora(model_tmp: PreTrainedModel):
             "KGQwen2Model.W_k": 64,
             "lm_head": 1,
         },
-        lora_alpha=16,
-        lora_dropout=0.1,
+        alpha_pattern={
+            "encode_relation.W_q":256,
+            "encode_relation.W_k":256,
+            "encode_relation.W_v":256,
+            "encode_relation.update":256,
+            "KGQwen2Model.W_q": 256,
+            "KGQwen2Model.W_k": 256,
+            "lm_head": 1,
+        },
         target_modules=[
             # KGQwen2DecoderLayer中的encode_relation相关参数
             "encode_relation.W_q",
@@ -103,12 +103,10 @@ def apply_lora(model_tmp: PreTrainedModel):
             "encode_relation.update",
             "KGQwen2Model.W_q",
             "KGQwen2Model.W_k",
-
-            # lm_head参数
-            "lm_head"
+            "lm_head",
         ],
         # 指定需要训练的基础模型层
-        modules_to_save=["lm_head"]  # 确保lm_head参数被训练
+        modules_to_save=[]  # 确保lm_head参数被训练
         # modules_to_save=[]
     )
 
@@ -192,7 +190,7 @@ def run(total_loss_accum, total_tokens_accum):
     # 训练参数
     # =========================
     training_args = TrainingArguments(
-        learning_rate= 2.25e-5,
+        learning_rate= 2.05e-5,
         output_dir=checkpoint_dir,  # 输出目录
         save_only_model=True,
         overwrite_output_dir=True,  # 覆盖旧输出
