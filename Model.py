@@ -102,13 +102,13 @@ class KGQwen2Model(Qwen2Model):
 
     def __init__(self, config: Qwen2Config):
         super().__init__(config)
-        self.W_k = nn.Linear(config.hidden_size, config.hidden_size)
-        self.W_q = nn.Linear(config.hidden_size, config.hidden_size)
+        self.relation_W_k = nn.Linear(config.hidden_size, config.hidden_size)
+        self.relation_W_q = nn.Linear(config.hidden_size, config.hidden_size)
         # 初始化参数
-        glorot(self.W_k.weight)
-        glorot(self.W_q.weight)
-        nn.init.zeros_(self.W_k.bias)
-        nn.init.zeros_(self.W_q.bias)
+        glorot(self.relation_W_k.weight)
+        glorot(self.relation_W_q.weight)
+        nn.init.zeros_(self.relation_W_k.bias)
+        nn.init.zeros_(self.relation_W_q.bias)
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -501,7 +501,7 @@ class KGEmbedding(nn.Module):
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
         # 通过W_q、W_k去计算X_i与X_j之间的相关性而不是显示存储在R_map中
-        self.num_heads = 2
+        self.num_heads = num_heads//2
         self.head_dim = self.hidden_channels // self.num_heads
         self.W_q = weight_q
         self.W_k = weight_k
@@ -563,13 +563,13 @@ class KGEmbedding(nn.Module):
             target = torch.zeros(bsz, self.num_heads, nodes, dtype=torch.bool, device="cuda")  # [bsz, nodes]
 
             # 使用dropout代替随机采样
-            score_s2t = torch.softmax(score_s2t, dim=-1, dtype=torch.float32).to(input_dtype)
             score_s2t = score_s2t.reshape(-1, self.num_heads, nodes)
             score_s2t = F.dropout(score_s2t, p=0.25, training=self.training)
             topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
             target[:] = False
             target.scatter_(2, topk_idx, True)
             score_s2t = score_s2t.masked_fill(~target, float(0.0))  # 只保留mask的元素
+            score_s2t = torch.softmax(score_s2t, dim=-1, dtype=torch.float32).to(input_dtype)
 
             h_hat_t = torch.einsum('bhd,hdk->bhk', score_s2t, x_v)
             h_hat_t = h_hat_t.reshape(-1, self.hidden_channels)
