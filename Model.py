@@ -501,7 +501,7 @@ class KGEmbedding(nn.Module):
         self.relation_num = relation_num
         self.hidden_channels = hidden_channels
         # 通过W_q、W_k去计算X_i与X_j之间的相关性而不是显示存储在R_map中
-        self.num_heads = num_heads//2
+        self.num_heads = 4
         self.head_dim = self.hidden_channels // self.num_heads
         self.W_q = weight_q
         self.W_k = weight_k
@@ -542,6 +542,7 @@ class KGEmbedding(nn.Module):
         input_dtype = h_t.dtype
 
         with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
+            torch.cuda.empty_cache()
             # 直接取 embedding.weight
             token_embedding = embedding.weight  # [V, d]
 
@@ -569,6 +570,8 @@ class KGEmbedding(nn.Module):
             target[:] = False
             target.scatter_(2, topk_idx, True)
             score_s2t = score_s2t.masked_fill(~target, float(0.0))  # 只保留mask的元素
+
+            # 将Softmax调整到随机掩码和Topk后使用稀疏softmax
             score_s2t = torch.softmax(score_s2t, dim=-1, dtype=torch.float32).to(input_dtype)
 
             h_hat_t = torch.einsum('bhd,hdk->bhk', score_s2t, x_v)
