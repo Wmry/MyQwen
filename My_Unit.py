@@ -174,8 +174,8 @@ def replace_attention_layers(model, top_config=None, elements=None, current_dept
                 new_layer = KGQwen2DecoderLayer(
                     top_config,  # 使用顶层config而不是当前模块的config
                     embed_tokens=parent_modle.embed_tokens,  # 共享顶层的embedding
-                    weight_k=parent_modle.W_k,
-                    weight_q=parent_modle.W_q,
+                    weight_k=parent_modle.relation_W_k,
+                    weight_q=parent_modle.relation_W_q,
                     layer_idx=layer_idx
                 ).to(device=elements['device'], dtype=top_config.torch_dtype)
 

@@ -79,21 +79,21 @@ def apply_lora(model_tmp: PreTrainedModel):
         lora_alpha=1,
         lora_dropout=0.1,
         rank_pattern={
+            "encode_relation.W_q":16,
+            "encode_relation.W_k":16,
+            "encode_relation.W_v":16,
+            "encode_relation.update":16,
+            "model.relation_W_k": 16,
+            "model.relation_W_q": 16,
+            "lm_head": 1,
+        },
+        alpha_pattern={
             "encode_relation.W_q":64,
             "encode_relation.W_k":64,
             "encode_relation.W_v":64,
             "encode_relation.update":64,
-            "KGQwen2Model.W_q": 64,
-            "KGQwen2Model.W_k": 64,
-            "lm_head": 1,
-        },
-        alpha_pattern={
-            "encode_relation.W_q":256,
-            "encode_relation.W_k":256,
-            "encode_relation.W_v":256,
-            "encode_relation.update":256,
-            "KGQwen2Model.W_q": 256,
-            "KGQwen2Model.W_k": 256,
+            "model.relation_W_k": 64,
+            "model.relation_W_q": 64,
             "lm_head": 1,
         },
         target_modules=[
@@ -102,12 +102,19 @@ def apply_lora(model_tmp: PreTrainedModel):
             "encode_relation.W_k",
             "encode_relation.W_v",
             "encode_relation.update",
-            "KGQwen2Model.W_q",
-            "KGQwen2Model.W_k",
+            "model.relation_W_k",
+            "model.relation_W_q",
             "lm_head",
         ],
         # 指定需要训练的基础模型层
-        modules_to_save=[]  # 确保lm_head参数被训练
+        modules_to_save=[
+            "encode_relation.W_q",
+            "encode_relation.W_k",
+            "model.relation_W_q",
+            "model.relation_W_k",
+            "encode_relation.W_v",
+            "encode_relation.update"
+        ]
         # modules_to_save=[]
     )
 
@@ -247,6 +254,7 @@ def run(total_loss_accum, total_tokens_accum):
     # =========================
     # Trainer
     # =========================
+    torch.cuda.empty_cache()
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -255,7 +263,7 @@ def run(total_loss_accum, total_tokens_accum):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        optimizers=(optimizer, scheduler),  # 传入自定义 optimizer
+        # optimizers=(optimizer, scheduler),  # 传入自定义 optimizer
     )
 
     # =========================
@@ -310,7 +318,7 @@ def valid():
 
     # 5. 切换到适配器模式（如果需要使用多个适配器）
     model_tmp.set_adapter("default")  # 使用默认适配器
-
+    torch.cuda.empty_cache()
     model_tmp.eval()
     text = "请介绍“村里的其他孩子也是“狗娃”“二蛋”之类的被人一直称呼着”的含义"
     inputs = tokenizer(text, return_tensors="pt", max_length=125, padding=True).to(device)
@@ -326,6 +334,6 @@ def valid():
 
 if __name__ == "__main__":
 
-    run(total_loss_accum, total_tokens_accum)
-    # valid()
+    # run(total_loss_accum, total_tokens_accum)
+    valid()
 
