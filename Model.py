@@ -569,7 +569,7 @@ class KGEmbedding(nn.Module):
             topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
             target[:] = False
             target.scatter_(2, topk_idx, True)
-            score_s2t = score_s2t.masked_fill(~target, float(0.0))  # 只保留mask的元素
+            score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
 
             # 将Softmax调整到随机掩码和Topk后使用稀疏softmax
             score_s2t = torch.softmax(score_s2t, dim=-1, dtype=torch.float32).to(input_dtype)

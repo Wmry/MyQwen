@@ -172,28 +172,6 @@ def run(total_loss_accum, total_tokens_accum):
     model_train_log = params['path_set']['logging_dir']
     checkpoint_dir = params['path_set']['checkpoint_dir']
 
-    param_optimizer = [
-        {
-            "params": [p for n, p in model.named_parameters()
-                       if "encode_relation" in n and p.requires_grad],
-            "lr": 5e-4,  # encode_relation LoRA 学习率高
-        },
-        {
-            "params": [p for n, p in model.named_parameters()
-                       if "lm_head" in n and p.requires_grad],
-            "lr": 1e-5,  # lm_head LoRA 学习率低
-        }
-    ]
-
-    optimizer = AdamW(param_optimizer, betas=(0.9, 0.999), eps=1e-8)
-
-    scheduler = get_scheduler(
-        "cosine",
-        optimizer=optimizer,
-        num_warmup_steps=32,
-        num_training_steps=4832
-    )
-
     train_dataset, valid_dataset, data_collator = load_my_dataset_hugging_face_method(
         txt_path=train_path,
         txt_name=train_txtfile,
@@ -210,11 +188,47 @@ def run(total_loss_accum, total_tokens_accum):
     model = apply_lora(model)
     model.config.use_cache = False
     print_trainable_parameters(model)
+
+    # =========================
+    # 优化器参数分组
+    # =========================
+    relation_params, lm_head_params, other_lora_params = [], [], []
+
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        # 1. 您的自定义关系模块 - 建议中等偏上的学习率 (因为它可能是新加的核心模块)
+        if "encode_relation" in n or "relation_W" in n:
+            relation_params.append(p)
+        # 2. 输出头 - 建议较高的学习率 (因为它直接负责最终预测，需要快速适应)
+        elif "lm_head" in n:
+            lm_head_params.append(p)
+        # 3. 其他所有LoRA参数 (通常是Q, K, V等) - 使用较低的学习率 (微调预训练知识)
+        else:
+            other_lora_params.append(p)
+
+    param_optimizer = [
+        {"params": relation_params, "lr": 3e-4, "weight_decay": 0.01},  # 新增关系模块，中等LR
+        {"params": lm_head_params, "lr": 1e-6, "weight_decay": 0.0},  # 输出头，最高LR
+        {"params": other_lora_params, "lr": 1e-8, "weight_decay": 0.01},  # 其他LoRA参数，保守LR
+    ]
+
+    optimizer = AdamW(param_optimizer, lr=1e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)
+    # optimizer = AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)
+
+    num_training_steps = 4832
+    num_warmup_steps = int(num_training_steps * 0.02)  # 2% warmup
+
+    scheduler = get_scheduler(
+        "cosine",
+        optimizer=optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps
+    )
     # =========================
     # 开启 Gradient Checkpointing
     # =========================
     model.gradient_checkpointing_enable()
-
     # =========================
     # 训练参数
     # =========================
@@ -241,7 +255,7 @@ def run(total_loss_accum, total_tokens_accum):
         save_total_limit=2,  # 最多保留 2 个 checkpoint
 
         logging_dir=model_train_log,  # 日志
-        logging_steps=64,  # 每 64 步记录一次
+        logging_steps=16,  # 每 64 步记录一次
 
         # 🔑 避免 eval logits 堆积爆显存
         eval_accumulation_steps=64,  # 每 64 个 batch 把 logits 搬到 CPU
@@ -334,6 +348,6 @@ def valid():
 
 if __name__ == "__main__":
 
-    # run(total_loss_accum, total_tokens_accum)
-    valid()
+    run(total_loss_accum, total_tokens_accum)
+    # valid()
 
