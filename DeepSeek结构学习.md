@@ -105,6 +105,10 @@ class SharedQK(nn.Module):
 
 <font color=red size=3>实验记录（2-25-09-15）、**TopK 256训练效果太差**，需验证是训练参数有问题、还是模型具体实现有问题</font><font color=blue size=2>（需查看论文分析，为何验证时准确率为0）。</font>
 
+#######  大图更新采样问题
+step 1:对计算的相关性进行排序
+step 2:依据相关性划分子图，并限制子图中节点的个数
+
 [(2025)AlignVLM: Bridging Vision and Language Latent Spaces for Multimodal Understanding](D:/Users/xiangyu/download/paper/AlignVLM.pdf)
 关键技术：对比学习实现多模态对齐
 [(2025)Agentic Retrieval-Augmented Generation: A Survey on Agentic RAG](D:/Users/xiangyu/download/paper/Suervey on agentix RAG.pdf)
