@@ -30,7 +30,7 @@ def glorot(value: Any):
 class KGQwen2DecoderLayer(Qwen2DecoderLayer):
     def __init__(self, config: Qwen2Config, layer_idx: int, embed_tokens, weight_k, weight_q):
         super().__init__(config, layer_idx)
-        self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.vocab_size, weight_q, weight_k, config.num_attention_heads)
+        self.encode_relation = KGEmbedding(self.hidden_size, self.hidden_size, 2, config.rms_norm_eps, weight_q, weight_k, config.num_attention_heads)
         self.embed_tokens = embed_tokens
 
     def forward(
@@ -494,7 +494,7 @@ def extract_valid_token_mask(attention_mask):
 
 class KGEmbedding(nn.Module):
     #  需从新设计关系编码器 由W^{N \times N \times R}、W_{q}^{N \times N}、W_{k}^{N \times N}、W_{ATT}^{N \times N}构成
-    def __init__(self, channels, hidden_channels, relation_num, node_num, weight_q, weight_k, num_heads):
+    def __init__(self, channels, hidden_channels, relation_num, rms_norm_eps, weight_q, weight_k, num_heads):
         super(KGEmbedding, self).__init__()
         self.k = 4096
         self.channels = channels
@@ -510,6 +510,7 @@ class KGEmbedding(nn.Module):
         # self.R_i = torch.arange(node_num, dtype=torch.int)  # 映射不同节点关系索引
         # 初始化参数
         self._init_weights()
+        self.norm = Qwen2RMSNorm(hidden_channels, eps=rms_norm_eps)
         self.alpha = 0.2
 
     def _init_weights(self):
@@ -583,11 +584,25 @@ class KGEmbedding(nn.Module):
         return h_t_new
 
     def update_n(self, h_t):
-        return F.gelu(self.update(h_t))
+        return F.gelu(self.norm(self.update(h_t)))
 
     def _forward(self, query_states, attention_mask, embedding: nn.Embedding):
         return self._encode_relation(query_states, attention_mask, embedding)
 
     def forward(self, query_states, attention_mask, embedding: nn.Embedding):
         return self._forward(query_states, attention_mask, embedding)
+
+class Tgraph(nn.Module):
+    def __init__(self, weight_q, weight_k, num_relations, channels):
+        super(Tgraph, self).__init__()
+        self.W_q = weight_q
+        self.W_k = weight_k
+        self.num_relations = num_relations
+        self.hidden_dim = channels/num_relations
+    def _forward(self, token_embedding):
+        # 获取token_embedding后需要通过类似与GraphSAGE按照多头（仿照Transformer多头机制）子图进行
+        # 汇聚更新token_embedding保存的嵌入特征，汇聚过程可使用torch.einsum方法减少中间过程的显存消耗，
+        pass
+    def forward(self, token_embedding):
+        return self._forward(token_embedding)
 
