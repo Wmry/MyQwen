@@ -208,12 +208,14 @@ def run(total_loss_accum, total_tokens_accum):
             other_lora_params.append(p)
 
     param_optimizer = [
-        {"params": relation_params, "lr": 3e-4, "weight_decay": 0.01},  # 新增关系模块，中等LR
-        {"params": lm_head_params, "lr": 1e-6, "weight_decay": 0.0},  # 输出头，最高LR
-        {"params": other_lora_params, "lr": 1e-8, "weight_decay": 0.01},  # 其他LoRA参数，保守LR
+        {"params": relation_params, "lr": 3.05e-4, "weight_decay": 0.01},  # 新增关系模块，中等LR
+        {"params": lm_head_params, "lr": 2e-5, "weight_decay": 0.0},  # 输出头，最高LR
+        {"params": other_lora_params, "lr": 2e-5, "weight_decay": 0.01},  # 其他LoRA参数，保守LR
     ]
 
-    optimizer = AdamW(param_optimizer, lr=1e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)
+    optimizer = AdamW(param_optimizer, betas=(0.9, 0.999), eps=1e-8)
+    # optimizer = AdamW(model.parameters(), lr=3e-4)
+
     # optimizer = AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)
 
     num_training_steps = 4832
@@ -277,7 +279,7 @@ def run(total_loss_accum, total_tokens_accum):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        # optimizers=(optimizer, scheduler),  # 传入自定义 optimizer
+        optimizers=(optimizer, scheduler),  # 传入自定义 optimizer
     )
 
     # =========================
