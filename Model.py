@@ -570,7 +570,7 @@ class KGEmbedding(nn.Module):
             topk_val, topk_idx = torch.topk(score_s2t, k=min(self.k, nodes), dim=-1)
             target[:] = False
             target.scatter_(2, topk_idx, True)
-            score_s2t = score_s2t.masked_fill(~target, float('-inf'))  # 只保留mask的元素
+            score_s2t = score_s2t.masked_fill(~target, float('1e-9'))  # 只保留mask的元素
 
             # 将Softmax调整到随机掩码和Topk后使用稀疏softmax
             score_s2t = torch.softmax(score_s2t, dim=-1, dtype=torch.float32).to(input_dtype)
@@ -593,16 +593,32 @@ class KGEmbedding(nn.Module):
         return self._forward(query_states, attention_mask, embedding)
 
 class Tgraph(nn.Module):
-    def __init__(self, weight_q, weight_k, num_relations, channels):
+    def __init__(self, weight_q, weight_k, num_relations, channels, max_nodes):
         super(Tgraph, self).__init__()
         self.W_q = weight_q
         self.W_k = weight_k
         self.num_relations = num_relations
         self.hidden_dim = channels/num_relations
+        self.update = nn.Linear(channels, channels)
+        self.max_nodes = max_nodes
+
     def _forward(self, token_embedding):
         # 获取token_embedding后需要通过类似与GraphSAGE按照多头（仿照Transformer多头机制）子图进行
         # 汇聚更新token_embedding保存的嵌入特征，汇聚过程可使用torch.einsum方法减少中间过程的显存消耗，
+        # 对与图采样使用随机采样法吧，每个节点的邻近控制在K个，每次进行采样更新的节点控制在M个
         pass
+
+    def sample_graph(self, query_states, attention_mask, embedding):
+        # 通过计算query_states与embedding的关系进行，有放回的采样获取子图
+        # 采样的所有节点数小于self.max_nodes,通过TopK控制节点数小于max_nodes则全取否则取前TopK个
+        pass
+
+    def aggregate(self, sub_graph):
+        #（取出对应的token_embedding，循环更新各个节点特征）
+        pass
+
+    def update_n(self, h_t):
+        return self.update(h_t)
+
     def forward(self, token_embedding):
         return self._forward(token_embedding)
-
