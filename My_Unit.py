@@ -358,7 +358,7 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
         return tokenizer(
             examples["text"],
             truncation=True,
-            max_length=128,  # 添加最大长度限制以防止内存问题
+            max_length=64,  # 添加最大长度限制以防止内存问题
             # 不在此处填充，由data_collator处理
         )
 
