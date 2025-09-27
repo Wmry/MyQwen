@@ -180,7 +180,7 @@ def run(total_loss_accum, total_tokens_accum):
     )
 
     train_length = len(train_dataset)
-    train_batch_size = 16
+    train_batch_size = 32
 
     # =========================
     # 应用 LoRA
@@ -208,7 +208,7 @@ def run(total_loss_accum, total_tokens_accum):
             other_lora_params.append(p)
 
     param_optimizer = [
-        {"params": relation_params, "lr": 3.05e-4, "weight_decay": 0.01},  # 新增关系模块，中等LR
+        {"params": relation_params, "lr": 3.25e-4, "weight_decay": 0.01},  # 新增关系模块，中等LR
         {"params": lm_head_params, "lr": 2e-5, "weight_decay": 0.0},  # 输出头，最高LR
         {"params": other_lora_params, "lr": 2e-5, "weight_decay": 0.01},  # 其他LoRA参数，保守LR
     ]
@@ -217,9 +217,11 @@ def run(total_loss_accum, total_tokens_accum):
     # optimizer = AdamW(model.parameters(), lr=3e-4)
 
     # optimizer = AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)
-
-    num_training_steps = 4832
+    epochs = 3
+    num_training_steps = (train_length // train_batch_size) * epochs
     num_warmup_steps = int(num_training_steps * 0.02)  # 2% warmup
+
+    print("num_training_steps: ",num_training_steps)
 
     scheduler = get_scheduler(
         "cosine",
@@ -235,14 +237,14 @@ def run(total_loss_accum, total_tokens_accum):
     # 训练参数
     # =========================
     training_args = TrainingArguments(
-        learning_rate= 2.05e-4,
+        # learning_rate= 2.05e-4,
         output_dir=checkpoint_dir,  # 输出目录
         save_only_model=True,
         overwrite_output_dir=True,  # 覆盖旧输出
-        num_train_epochs=2,  # 训练 epoch
-        per_device_train_batch_size=16,  # 训练 batch（可适当调大，看显存）
+        num_train_epochs=epochs,  # 训练 epoch
+        per_device_train_batch_size=train_batch_size,  # 训练 batch（可适当调大，看显存）
         per_device_eval_batch_size=1,  # 验证 batch，小一点避免 OOM
-        gradient_accumulation_steps=4,  # 累积梯度，相当于扩大 batch
+        gradient_accumulation_steps=2,  # 累积梯度，相当于扩大 batch
 
         fp16=False,  # 不用 fp16
         bf16=True,  # 用 bf16（A100/8.9 支持，数值更稳定）
