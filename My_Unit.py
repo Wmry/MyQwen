@@ -8,7 +8,7 @@ import torch
 from datasets import load_dataset, Dataset
 from matplotlib import pyplot as plt
 from scipy.constants import value
-from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForLanguageModeling, BertTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForLanguageModeling, BertTokenizer, AutoModelForMaskedLM
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Model, Qwen2DecoderLayer
 from Model import KGQwen2Attention, KGQwen2ForCausalLM, KGQwen2Model, KGQwen2DecoderLayer
 
@@ -87,7 +87,7 @@ def print_trainable_parameters(model: torch.nn.Module):
     print("=" * 80)
 
 
-def load_base_model(elements):
+def load_base_model(elements, use_masked_lm = False):
 
     elements['base_info']['device'] = "cuda" if torch.cuda.is_available() else "cpu"
     if elements['train_set']['fp16']:
@@ -99,11 +99,18 @@ def load_base_model(elements):
 
     print(f"Using device: " + elements['base_info']['device'])
     tokenizer_tmp = AutoTokenizer.from_pretrained(elements['base_info']['model_path'])
-    model_tmp = AutoModelForCausalLM.from_pretrained(
-        elements['base_info']['model_path'],
-        device_map=elements['base_info']['device'],
-        torch_dtype=torch_dtype
-    )
+    if use_masked_lm:
+        model_tmp = AutoModelForMaskedLM.from_pretrained(
+            elements['base_info']['model_path'],
+            device_map=elements['base_info']['device'],
+            torch_dtype=torch_dtype
+        )
+    else:
+        model_tmp = AutoModelForCausalLM.from_pretrained(
+            elements['base_info']['model_path'],
+            device_map=elements['base_info']['device'],
+            torch_dtype=torch_dtype
+        )
 
     replace_model(model=model_tmp, elements=elements['base_info'])
     replace_attention_layers(model=model_tmp, elements=elements['base_info'])
@@ -267,7 +274,12 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 
 
-def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokenizer=None, target_multiple=512):
+def load_my_dataset_hugging_face_method(
+        txt_path,
+        txt_name="TestKG.txt",
+        tokenizer=None,
+        target_multiple=512,
+        token_max_length=128):
     """
     加载并预处理文本数据集，确保数据集大小是target_multiple的倍数
 
@@ -293,17 +305,17 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
         text = text.replace("\u3000", " ")
         text = re.sub(r"\s+", " ", text).strip()
         text = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9，。？！：；、“”‘'’…\s]", "", text)
-        sentences = re.split(r'([。！？])', text)
-        merged_sentences = []
-        for i in range(0, len(sentences) - 1, 2):
-            sentence = sentences[i].strip()
-            punct = sentences[i + 1].strip()
-            if sentence:
-                merged_sentences.append(sentence + punct)
-        if len(sentences) % 2 != 0 and sentences[-1].strip():
-            merged_sentences.append(sentences[-1].strip())
-        final_text = " ".join(merged_sentences)
-        final_text = re.sub(r'[\r\n]+', ' ', final_text)
+        # sentences = re.split(r'([。！？])', text)
+        # merged_sentences = []
+        # for i in range(0, len(sentences) - 1, 2):
+        #     sentence = sentences[i].strip()
+        #     punct = sentences[i + 1].strip()
+        #     if sentence:
+        #         merged_sentences.append(sentence + punct)
+        # if len(sentences) % 2 != 0 and sentences[-1].strip():
+        #     merged_sentences.append(sentences[-1].strip())
+        # final_text = " ".join(merged_sentences)
+        final_text = re.sub(r'[\r\n]+', ' ', text)
         final_text = re.sub(r'\s+', ' ', final_text).strip()
         return {"text": final_text}
 
@@ -317,16 +329,11 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
 
     dataset = dataset.filter(filter_empty_lines)
 
-    # 计算调整后的数据集大小
-    def adjust_to_multiple(size, multiple):
-        """调整大小到最接近的multiple的倍数"""
-        return math.floor(size / multiple) * multiple
-
     # 3. 划分训练/验证/测试集 (80% train, 10% valid, 10% test)
     # 首先获取原始大小
     total_size = len(dataset)
-    train_size = adjust_to_multiple(total_size * 0.998, target_multiple)
-    valid_test_size = adjust_to_multiple(total_size * 0.002, target_multiple)
+    train_size = math.floor(total_size * 0.99)
+    valid_test_size = math.floor(total_size * 0.01)
 
     # 使用select方法选择指定数量的样本
     train_dataset = dataset.select(range(train_size))
@@ -337,10 +344,6 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
 
     print(f"数据集大小调整: 总样本 {total_size} -> 训练集 {len(train_dataset)}, "
           f"验证集 {len(valid_dataset)}")
-
-    # 确保所有数据集大小都是target_multiple的倍数
-    assert len(train_dataset) % target_multiple == 0, "训练集大小不是目标倍数"
-    assert len(valid_dataset) % target_multiple == 0, "验证集大小不是目标倍数"
 
     # 4. 初始化分词器
     if tokenizer is None:
@@ -365,6 +368,80 @@ def load_my_dataset_hugging_face_method(txt_path, txt_name="TestKG.txt", tokeniz
     # 6. 对三个数据集做token化
     train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
     valid_dataset = valid_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+
+    # 拼接再切分函数
+    def group_texts(examples):
+        """
+        合并文本但不截断，当超过token_max_length时停止合并
+        """
+        # 用于存储结果的字典
+        result = {k: [] for k in examples.keys()}
+
+        # 当前正在构建的序列
+        current_chunk = {k: [] for k in examples.keys()}
+        current_length = 0
+
+        # 遍历每个样本
+        for i in range(len(examples["input_ids"])):
+            sample_length = len(examples["input_ids"][i])
+
+            # 如果当前样本为空，跳过
+            if sample_length == 0:
+                continue
+
+            # 如果当前样本本身超过最大长度，单独处理
+            if sample_length >= token_max_length:
+                # 如果当前块不为空，先保存当前块
+                if current_length > 0:
+                    for k in examples.keys():
+                        result[k].append(current_chunk[k])
+                    current_chunk = {k: [] for k in examples.keys()}
+                    current_length = 0
+
+                # 将长样本截断为最大长度
+                for k in examples.keys():
+                    result[k].append(examples[k][i][:token_max_length])
+                continue
+
+            # 如果加入当前样本会超过最大长度，保存当前块并开始新块
+            if current_length + sample_length > token_max_length:
+                if current_length > 0:  # 确保当前块不为空
+                    for k in examples.keys():
+                        result[k].append(current_chunk[k])
+
+                # 开始新块，包含当前样本
+                current_chunk = {k: examples[k][i][:] for k in examples.keys()}
+                current_length = sample_length
+            else:
+                # 将当前样本添加到当前块
+                for k in examples.keys():
+                    current_chunk[k].extend(examples[k][i])
+                current_length += sample_length
+
+        # 处理最后一个块（如果不为空且长度合适）
+        if current_length > 0:
+            for k in examples.keys():
+                result[k].append(current_chunk[k])
+
+        return result
+
+    train_dataset = train_dataset.map(group_texts, batched=True)
+    valid_dataset = valid_dataset.map(group_texts, batched=True)
+
+    # 计算调整后的数据集大小
+    def adjust_to_multiple(size, multiple):
+        """调整大小到最接近的multiple的倍数"""
+        return math.floor(size / multiple) * multiple
+
+    train_dataset_index = adjust_to_multiple(len(train_dataset), target_multiple)
+    valid_dataset_index = adjust_to_multiple(len(valid_dataset), target_multiple)
+    train_dataset = train_dataset.select(range(train_dataset_index))
+    valid_dataset = valid_dataset.select(range(256))
+
+
+    # 确保所有数据集大小都是target_multiple的倍数
+    assert len(train_dataset) % target_multiple == 0, "训练集大小不是目标倍数"
+    assert len(valid_dataset) % target_multiple == 0, "验证集大小不是目标倍数"
 
     # 7. 定义collator，自动生成labels并动态padding
     data_collator = DataCollatorForLanguageModeling(
