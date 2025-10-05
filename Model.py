@@ -597,15 +597,24 @@ class Tgraph(nn.Module):
         super(Tgraph, self).__init__()
         self.W_q = weight_q
         self.W_k = weight_k
-        self.num_relations = num_relations
+        self.num_relations = num_relations  # 映射特征的关系数
         self.hidden_dim = channels/num_relations
         self.update = nn.Linear(channels, channels)
         self.max_nodes = max_nodes
 
-    def _forward(self, token_embedding):
+    def _forward(self, token_embedding, update_token_index):
         # 获取token_embedding后需要通过类似与GraphSAGE按照多头（仿照Transformer多头机制）子图进行
         # 汇聚更新token_embedding保存的嵌入特征，汇聚过程可使用torch.einsum方法减少中间过程的显存消耗，
         # 对与图采样使用随机采样法吧，每个节点的邻近控制在K个，每次进行采样更新的节点控制在M个
+
+        node_stack = [[]]
+        # 期望通过设置max_nodes设置最大子图节点数，将大图分解为多个节点数小于最大节点数的小图，并子图之间的相关性跟新全节点特征token_embedding
+        # 采样的方法设置为sample_graph，返回每个子图的节点掩码，通过返回的sample_graph循环便利node_stack更新大图
+
+        start_token = self.W_q(token_embedding)
+
+
+
         pass
 
     def sample_graph(self, query_states, attention_mask, embedding):
@@ -620,5 +629,5 @@ class Tgraph(nn.Module):
     def update_n(self, h_t):
         return self.update(h_t)
 
-    def forward(self, token_embedding):
-        return self._forward(token_embedding)
+    def forward(self, token_embedding, token_index):
+        return self._forward(token_embedding, token_index)
